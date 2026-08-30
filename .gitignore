@@ -17,3 +17,12 @@ desktop.ini
 # ~1 MB each, and one gets written per mixture per build step. Keeping them
 # would bloat the repo with output that carries no information the code does not.
 logs/figures/
+
+# Training runs: keep the RECORD, drop the BULK.
+# config.json and metrics.jsonl are small and are the actual history of what
+# was tried and what happened -- worth versioning. Checkpoints are ~12 MB
+# each and samples accumulate per evaluation; both are regenerable by
+# re-running, and would bloat the repo within a few experiments.
+runs/*/checkpoints/
+runs/*/samples/
+runs/*/metrics.csv

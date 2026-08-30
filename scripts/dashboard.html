@@ -1,0 +1,416 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ANC training runs</title>
+<style>
+  :root {
+    --bg: #ffffff; --panel: #f6f7f9; --line: #e2e5ea; --ink: #14171c;
+    --dim: #666e7a; --accent: #2563eb; --good: #16a34a; --warn: #d97706;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14171c; --panel: #1c2027; --line: #2b313a; --ink: #e8eaee;
+      --dim: #949cab; --accent: #60a5fa; --good: #4ade80; --warn: #fbbf24;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  header {
+    padding: 14px 20px; border-bottom: 1px solid var(--line);
+    display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap;
+  }
+  header h1 { font-size: 16px; margin: 0; font-weight: 650; }
+  .muted { color: var(--dim); font-size: 12px; }
+  .live {
+    color: var(--good); font-size: 12px; font-weight: 600;
+  }
+  .live::before {
+    content: "\25CF"; margin-right: 5px; animation: pulse 1.6s infinite;
+  }
+  @keyframes pulse { 50% { opacity: .25; } }
+
+  .wrap { display: grid; grid-template-columns: 290px 1fr; min-height: calc(100vh - 52px); }
+  aside { border-right: 1px solid var(--line); padding: 14px; overflow-y: auto; }
+  main { padding: 18px 20px 60px; overflow-x: hidden; }
+
+  .run {
+    border: 1px solid var(--line); border-radius: 8px; padding: 9px 11px;
+    margin-bottom: 8px; cursor: pointer; background: var(--panel);
+  }
+  .run:hover { border-color: var(--accent); }
+  .run.on { border-color: var(--accent); box-shadow: inset 3px 0 0 var(--swatch, var(--accent)); }
+  .run .top { display: flex; align-items: center; gap: 8px; }
+  .run .name { font-weight: 600; font-size: 13px; font-family: ui-monospace, monospace; }
+  .run .meta { color: var(--dim); font-size: 11.5px; margin-top: 3px; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em;
+       color: var(--dim); margin: 26px 0 10px; font-weight: 650; }
+  h2:first-child { margin-top: 0; }
+
+  .cards { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); }
+  .card { border: 1px solid var(--line); border-radius: 8px; padding: 11px 13px; background: var(--panel); }
+  .card .k { color: var(--dim); font-size: 11.5px; }
+  .card .v { font-size: 20px; font-weight: 650; margin-top: 2px; font-variant-numeric: tabular-nums; }
+  .card .s { color: var(--dim); font-size: 11.5px; margin-top: 1px; }
+  .hit { color: var(--good); } .miss { color: var(--warn); }
+
+  .charts { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); }
+  .chart { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px 6px; background: var(--panel); }
+  .chart h3 { margin: 0 0 2px; font-size: 12.5px; font-weight: 620; }
+  .chart .sub { color: var(--dim); font-size: 11px; margin-bottom: 6px; }
+  svg { display: block; width: 100%; height: auto; overflow: visible; }
+  .grid { stroke: var(--line); stroke-width: 1; }
+  .tick { fill: var(--dim); font-size: 9.5px; }
+  .target { stroke: var(--warn); stroke-width: 1.2; stroke-dasharray: 4 3; }
+  .tlabel { fill: var(--warn); font-size: 9.5px; }
+
+  table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+  th, td { text-align: right; padding: 5px 9px; border-bottom: 1px solid var(--line); }
+  th:first-child, td:first-child { text-align: left; }
+  th { color: var(--dim); font-weight: 600; font-size: 11.5px; }
+  td.num { font-variant-numeric: tabular-nums; }
+
+  .diff { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; }
+  .chg { font-family: ui-monospace, monospace; font-size: 12px; padding: 3px 0; }
+  .chg .kk { color: var(--accent); }
+  .chg .from { color: var(--dim); text-decoration: line-through; }
+  pre.src { max-height: 380px; overflow: auto; font-size: 11.5px; line-height: 1.45;
+            background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 10px; }
+  pre.src .add { color: var(--good); } pre.src .del { color: #ef4444; }
+  pre.src .hd { color: var(--dim); }
+
+  .samples { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(330px, 1fr)); }
+  .clip { border: 1px solid var(--line); border-radius: 8px; padding: 11px 13px; background: var(--panel); }
+  .clip h4 { margin: 0 0 8px; font-size: 12.5px; }
+  .row { display: flex; align-items: center; gap: 8px; margin-bottom: 5px; font-size: 12px; }
+  .row span { width: 74px; color: var(--dim); flex: none; }
+  audio { height: 30px; flex: 1; min-width: 0; }
+  .clip img { width: 100%; border-radius: 6px; margin-top: 8px; }
+  select, button {
+    background: var(--bg); color: var(--ink); border: 1px solid var(--line);
+    border-radius: 6px; padding: 4px 8px; font: inherit; font-size: 12px;
+  }
+  .empty { color: var(--dim); padding: 30px 0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>ANC training runs</h1>
+  <span class="muted" id="sub">loading…</span>
+  <span class="live" id="live" style="display:none">live</span>
+  <span class="muted" style="margin-left:auto" id="tick"></span>
+</header>
+
+<div class="wrap">
+  <aside>
+    <div class="muted" style="margin-bottom:8px">Select two or more to compare</div>
+    <div id="runlist"></div>
+  </aside>
+  <main id="main"><div class="empty">Loading runs…</div></main>
+</div>
+
+<script>
+const COLORS = ["#2563eb", "#dc2626", "#16a34a", "#9333ea", "#ea580c", "#0891b2", "#c026d3"];
+let RUNS = [], TARGETS = {}, SELECTED = [], CACHE = {}, SRC_A = null, SRC_B = null;
+
+const fmt = (v, d = 3) => (v === null || v === undefined || Number.isNaN(v)) ? "—" : (+v).toFixed(d);
+const colorOf = n => COLORS[SELECTED.indexOf(n) % COLORS.length];
+
+async function getJSON(u) { const r = await fetch(u); return r.json(); }
+
+// ---------------------------------------------------------------- charting
+
+function lineChart(series, opts = {}) {
+  // series: [{name, color, points:[[x,y],...]}]
+  const W = 520, H = 200, L = 46, R = 12, T = 10, B = 26;
+  const pts = series.flatMap(s => s.points);
+  if (!pts.length) return `<div class="empty" style="padding:20px">no data yet</div>`;
+  let xs = pts.map(p => p[0]), ys = pts.map(p => p[1]);
+  if (opts.target != null) ys = ys.concat([opts.target]);
+  let x0 = Math.min(...xs), x1 = Math.max(...xs);
+  let y0 = Math.min(...ys), y1 = Math.max(...ys);
+  if (x1 === x0) x1 = x0 + 1;
+  const pad = (y1 - y0) * 0.12 || 1; y0 -= pad; y1 += pad;
+  const sx = v => L + (v - x0) / (x1 - x0) * (W - L - R);
+  const sy = v => T + (1 - (v - y0) / (y1 - y0)) * (H - T - B);
+
+  let g = "";
+  for (let i = 0; i <= 4; i++) {
+    const v = y0 + (y1 - y0) * i / 4, y = sy(v);
+    g += `<line class="grid" x1="${L}" y1="${y}" x2="${W - R}" y2="${y}"/>`;
+    g += `<text class="tick" x="${L - 6}" y="${y + 3}" text-anchor="end">${(+v).toFixed(opts.dp ?? 2)}</text>`;
+  }
+  const step = Math.max(1, Math.round((x1 - x0) / 6));
+  for (let v = Math.ceil(x0); v <= x1; v += step) {
+    g += `<text class="tick" x="${sx(v)}" y="${H - 8}" text-anchor="middle">${v}</text>`;
+  }
+  if (opts.target != null && opts.target >= y0 && opts.target <= y1) {
+    const y = sy(opts.target);
+    g += `<line class="target" x1="${L}" y1="${y}" x2="${W - R}" y2="${y}"/>`;
+    g += `<text class="tlabel" x="${W - R}" y="${y - 4}" text-anchor="end">target ${opts.target}</text>`;
+  }
+  for (const s of series) {
+    if (!s.points.length) continue;
+    const d = s.points.map((p, i) => `${i ? "L" : "M"}${sx(p[0]).toFixed(1)},${sy(p[1]).toFixed(1)}`).join("");
+    g += `<path d="${d}" fill="none" stroke="${s.color}" stroke-width="1.8" stroke-linejoin="round"/>`;
+    const last = s.points[s.points.length - 1];
+    g += `<circle cx="${sx(last[0]).toFixed(1)}" cy="${sy(last[1]).toFixed(1)}" r="2.8" fill="${s.color}"/>`;
+  }
+  return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">${g}</svg>`;
+}
+
+function chartBlock(title, sub, key, opts = {}) {
+  const series = SELECTED.map(n => ({
+    name: n, color: colorOf(n),
+    points: (CACHE[n]?.history || [])
+      .filter(r => r[key] !== undefined && r[key] !== null)
+      .map(r => [r.epoch, r[key]])
+  }));
+  return `<div class="chart"><h3>${title}</h3><div class="sub">${sub}</div>
+          ${lineChart(series, opts)}</div>`;
+}
+
+// ------------------------------------------------------------------ render
+
+function renderRunList() {
+  document.getElementById("runlist").innerHTML = RUNS.map(r => {
+    const on = SELECTED.includes(r.name);
+    const c = on ? colorOf(r.name) : "transparent";
+    const last = r.last || {};
+    return `<div class="run ${on ? "on" : ""}" style="--swatch:${c}" data-n="${r.name}">
+      <div class="top">
+        <span class="dot" style="background:${on ? c : "var(--line)"}"></span>
+        <span class="name">${r.name}</span>
+        ${r.running ? '<span class="live" style="font-size:10px">live</span>' : ""}
+      </div>
+      <div class="meta">${r.epochs} epochs${r.planned_epochs ? " / " + r.planned_epochs : ""}
+        &middot; ${(r.parameters || 0).toLocaleString()} params
+        ${last.val_si_snr != null ? "&middot; SI-SNR " + fmt(last.val_si_snr, 2) : ""}</div>
+      ${r.note ? `<div class="meta" style="margin-top:4px">${r.note.slice(0, 90)}${r.note.length > 90 ? "…" : ""}</div>` : ""}
+    </div>`;
+  }).join("") || `<div class="empty">No runs yet.</div>`;
+
+  document.querySelectorAll(".run").forEach(el => el.onclick = () => toggle(el.dataset.n));
+}
+
+async function toggle(name) {
+  const i = SELECTED.indexOf(name);
+  if (i >= 0) SELECTED.splice(i, 1); else SELECTED.push(name);
+  await Promise.all(SELECTED.map(loadRun));
+  renderRunList(); renderMain();
+}
+
+async function loadRun(name) { CACHE[name] = await getJSON("/api/run/" + name); }
+
+function summaryCards() {
+  if (!SELECTED.length) return "";
+  const rows = SELECTED.map(n => {
+    const r = RUNS.find(x => x.name === n) || {};
+    const h = CACHE[n]?.history || [];
+    const withEval = h.filter(x => x.pesq_enhanced != null);
+    const e = withEval[withEval.length - 1] || {};
+    const best = r.best || {};
+    const card = (k, v, s, cls = "") =>
+      `<div class="card"><div class="k">${k}</div><div class="v ${cls}">${v}</div><div class="s">${s || "&nbsp;"}</div></div>`;
+    const t = (key, val, tgt, dp) => {
+      if (val == null) return card(key, "—", "not evaluated yet");
+      const ok = val >= tgt;
+      return card(key, fmt(val, dp), `target ${tgt}${ok ? " — met" : ""}`, ok ? "hit" : "miss");
+    };
+    return `<h2 style="color:${colorOf(n)}">${n}</h2>
+      <div class="cards">
+        ${card("Epochs", h.length, r.running ? "still training" : "finished")}
+        ${t("PESQ", e.pesq_enhanced, 2.5, 3)}
+        ${t("STOI", e.stoi_enhanced, 0.85, 3)}
+        ${t("SNR (SI-SNR)", e.si_snr_enhanced, 15, 2)}
+        ${card("Latency", fmt(r.latency_ms, 0) + " ms", `${fmt(r.lookahead_ms,0)} ms lookahead + 100 ms chunk`)}
+        ${card("Best val loss", fmt(best.val_loss?.value, 3), best.val_loss ? "epoch " + best.val_loss.epoch : "")}
+      </div>`;
+  }).join("");
+  return rows;
+}
+
+function gainTable() {
+  const withCat = SELECTED.map(n => {
+    const h = CACHE[n]?.history || [];
+    const rows = h.filter(x => x.by_category);
+    return { name: n, cats: rows.length ? rows[rows.length - 1].by_category : null };
+  }).filter(x => x.cats);
+  if (!withCat.length) return "";
+  const cats = Object.keys(withCat[0].cats);
+  const head = withCat.map(w => `<th colspan="3" style="color:${colorOf(w.name)}">${w.name.split("_")[0]}</th>`).join("");
+  const sub = withCat.map(() => `<th>SNR</th><th>STOI</th><th>PESQ</th>`).join("");
+  const body = cats.map(c => {
+    const cells = withCat.map(w => {
+      const m = w.cats[c] || {};
+      const g = k => m[k + "_gain"] == null ? "—" : (m[k + "_gain"] >= 0 ? "+" : "") + fmt(m[k + "_gain"], k === "si_snr" ? 2 : 3);
+      return `<td class="num">${g("si_snr")}</td><td class="num">${g("stoi")}</td><td class="num">${g("pesq")}</td>`;
+    }).join("");
+    return `<tr><td>${c}</td>${cells}</tr>`;
+  }).join("");
+  return `<h2>Gain over the noisy input, per noise category</h2>
+    <div class="diff"><table>
+      <tr><th></th>${head}</tr><tr><th>category</th>${sub}</tr>${body}
+    </table>
+    <div class="muted" style="margin-top:8px">Positive is better. heavy_artillery and mortar have
+    only 4 and 6 validation clips, so their numbers are noisy — read them as hints.</div></div>`;
+}
+
+async function changePanel() {
+  if (SELECTED.length !== 2) return "";
+  const [a, b] = SELECTED;
+  const d = await getJSON(`/api/compare?a=${a}&b=${b}`);
+  const chg = Object.entries(d.config_changes || {});
+  const src = Object.entries(d.source_changed || {});
+  const list = chg.length ? chg.map(([k, v]) =>
+    `<div class="chg"><span class="kk">${k}</span>
+     <span class="from">${JSON.stringify(v.from)}</span> → <b>${JSON.stringify(v.to)}</b></div>`).join("")
+    : `<div class="muted">Settings are identical.</div>`;
+  const files = src.length ? src.map(([f, s]) =>
+    `<button onclick="showSrc('${a}','${b}','${f}')">${f} <span class="muted">${s}</span></button>`).join(" ")
+    : `<div class="muted">The source files are identical.</div>`;
+  return `<h2>What changed between these two runs</h2>
+    <div class="diff">
+      <div class="muted" style="margin-bottom:6px">${a} → ${b}</div>
+      ${list}
+      <div style="margin-top:12px"><b style="font-size:12.5px">Code</b><br>
+        <div class="muted" style="margin:4px 0 6px">Each run keeps a copy of the source that produced it,
+        so this is a real diff — not a guess from the working tree.</div>
+        ${files}</div>
+      <div id="srcout"></div>
+    </div>`;
+}
+
+async function showSrc(a, b, file) {
+  const d = await getJSON(`/api/source?a=${a}&b=${b}&file=${file}`);
+  const html = (d.diff || "(no differences)").split("\n").map(l => {
+    const cls = l.startsWith("+++") || l.startsWith("---") || l.startsWith("@@") ? "hd"
+      : l.startsWith("+") ? "add" : l.startsWith("-") ? "del" : "";
+    return `<span class="${cls}">${l.replace(/[<>&]/g, c => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" }[c]))}</span>`;
+  }).join("\n");
+  document.getElementById("srcout").innerHTML = `<pre class="src">${html}</pre>`;
+}
+
+function samplesPanel() {
+  const n = SELECTED[SELECTED.length - 1];
+  const clips = CACHE[n]?.samples || {};
+  const keys = Object.keys(clips);
+  if (!keys.length) return "";
+  const blocks = keys.map(k => {
+    const c = clips[k];
+    const eps = c.epochs.map(e => `<option value="${e.audio}|${e.mask}">epoch ${e.epoch}</option>`).reverse().join("");
+    const ref = t => c.refs[t] ? `<div class="row"><span>${t}</span>
+      <audio controls preload="none" src="/files/${n}/samples/${c.refs[t]}"></audio></div>` : "";
+    const first = c.epochs[c.epochs.length - 1];
+    return `<div class="clip">
+      <h4>${c.category} <span class="muted">clip ${c.index}</span></h4>
+      ${ref("noisy")}
+      <div class="row"><span>enhanced</span>
+        <select onchange="pickEpoch(this,'${n}')">${eps}</select></div>
+      <div class="row"><span></span><audio controls preload="none"
+        src="/files/${n}/samples/${first ? first.audio : ""}"></audio></div>
+      ${ref("clean")}
+      <img src="/files/${n}/samples/${first ? first.mask : ""}" alt="predicted mask">
+    </div>`;
+  }).join("");
+  return `<h2>Listen — ${n}</h2>
+    <div class="muted" style="margin-bottom:10px">The same fixed clips at every evaluation, so
+    comparing epochs is honest. Bright in the mask means "keep".</div>
+    <div class="samples">${blocks}</div>`;
+}
+
+function pickEpoch(sel, run) {
+  const [audio, mask] = sel.value.split("|");
+  const clip = sel.closest(".clip");
+  clip.querySelector("audio:not([src*='ref_'])");
+  const players = clip.querySelectorAll("audio");
+  players[players.length - 2].src = `/files/${run}/samples/${audio}`;
+  clip.querySelector("img").src = `/files/${run}/samples/${mask}`;
+}
+
+async function renderMain() {
+  const m = document.getElementById("main");
+  if (!SELECTED.length) {
+    m.innerHTML = `<div class="empty">Pick a run on the left. Pick two to see exactly
+      what changed between them.</div>`;
+    return;
+  }
+  const change = await changePanel();
+  m.innerHTML = `
+    ${summaryCards()}
+    <h2>Training curves</h2>
+    <div class="charts">
+      ${chartBlock("Loss", "train (lower) vs validation — the gap is overfitting", "val_loss", { dp: 2 })}
+      ${chartBlock("SI-SNR on validation", "dB, higher is better", "val_si_snr", { dp: 1, target: 15 })}
+      ${chartBlock("PESQ", "perceived quality, every 5th epoch", "pesq_enhanced", { dp: 2, target: 2.5 })}
+      ${chartBlock("STOI", "intelligibility, every 5th epoch", "stoi_enhanced", { dp: 2, target: 0.85 })}
+      ${chartBlock("Noise classifier accuracy", "the auxiliary task; chance is 0.143", "val_aux_accuracy", { dp: 2 })}
+      ${chartBlock("Seconds per epoch", "watch for slowdowns", "epoch_seconds", { dp: 0 })}
+    </div>
+    ${overfitPanel()}
+    ${gainTable()}
+    ${change}
+    ${samplesPanel()}`;
+}
+
+function overfitPanel() {
+  const series = SELECTED.map(n => {
+    const h = CACHE[n]?.history || [];
+    return {
+      name: n, color: colorOf(n),
+      points: h.filter(r => r.train_loss != null && r.val_loss != null)
+        .map(r => [r.epoch, r.val_loss - r.train_loss])
+    };
+  });
+  const worst = SELECTED.map(n => {
+    const h = CACHE[n]?.history || [];
+    const last = h[h.length - 1] || {};
+    return { n, gap: (last.val_loss ?? 0) - (last.train_loss ?? 0), since: last.epochs_since_improvement ?? 0 };
+  });
+  const notes = worst.map(w =>
+    `<div class="chg"><span class="kk">${w.n}</span> gap ${fmt(w.gap, 3)},
+     ${w.since} epochs since validation improved
+     ${w.since >= 8 ? '<b class="miss">— watch this</b>' : ""}</div>`).join("");
+  return `<h2>Overfitting watch</h2>
+    <div class="charts"><div class="chart">
+      <h3>Validation minus training loss</h3>
+      <div class="sub">rising means the model is memorising rather than learning</div>
+      ${lineChart(series, { dp: 2 })}
+    </div>
+    <div class="chart"><h3>Status</h3><div class="sub">early stopping fires at 12 epochs without improvement</div>
+    ${notes}</div></div>`;
+}
+
+// -------------------------------------------------------------------- poll
+
+async function refresh() {
+  // Re-rendering replaces the whole panel, which would throw away the scroll
+  // position and cut off any audio being played. Neither is acceptable in a
+  // page that refreshes itself every few seconds while you are using it.
+  if ([...document.querySelectorAll("audio")].some(a => !a.paused && !a.ended)) return;
+  const keepScroll = window.scrollY;
+  const d = await getJSON("/api/runs");
+  RUNS = d.runs; TARGETS = d.targets;
+  const live = RUNS.some(r => r.running);
+  document.getElementById("live").style.display = live ? "" : "none";
+  document.getElementById("sub").textContent =
+    `${RUNS.length} run${RUNS.length === 1 ? "" : "s"}`;
+  document.getElementById("tick").textContent =
+    "updated " + new Date().toLocaleTimeString();
+  if (!SELECTED.length && RUNS.length) SELECTED = [RUNS[0].name];
+  await Promise.all(SELECTED.map(loadRun));
+  renderRunList(); await renderMain();
+  window.scrollTo(0, keepScroll);
+}
+
+refresh();
+setInterval(async () => { if (RUNS.some(r => r.running)) await refresh(); }, 6000);
+</script>
+</body>
+</html>

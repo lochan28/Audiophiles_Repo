@@ -303,5 +303,20 @@ model, well inside 8 GB.
    trigger for the deferred voice-distortion augmentation
    (`PROJECT_CONTEXT_4.md` Section 7) and for trying `LSTM_HIDDEN = 128`.
 
+## Tuning ideas, from measurement rather than guesswork
+
+An epoch takes **11.3 seconds** (9.2 s GPU, 0.7 s data) and an evaluation
+about 12 more. 40 epochs is under 9 minutes; 150 is about half an hour.
+
+- **Set `EPOCHS` to 150, not 40.** Early stopping at 12 epochs of patience
+  will halt it when it plateaus, so there is no need to guess the number.
+- **Run many experiments.** A dozen configurations is an afternoon. This is
+  why the comparison dashboard earns its place.
+- **Raise `BATCH_SIZE` to 32 or 48.** Only 1.62 GB of 8 GB is in use and the
+  GPU is the bottleneck, so a bigger batch should cut epoch time.
+- **Do not add DataLoader workers.** Data loading is 6% of an epoch.
+  Worth recording because the first assumption was the opposite — mixing
+  audio on the fly sounds expensive and is not.
+
 Then the same for the TCN, and a comparison. DCCRN remains the stretch
 upgrade, attempted only once a working system exists.

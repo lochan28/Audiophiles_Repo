@@ -257,6 +257,51 @@ class SpeechNoiseMixtures(Dataset):
         return m["noisy"], m["clean"], m["label"]
 
 
+class FrozenMixtures(Dataset):
+    """The saved evaluation mixtures, read straight off disk.
+
+    Validation has to be measured on FIXED audio. If it were regenerated with
+    fresh random noise and SNR each epoch, the validation curve would wobble
+    with the draw rather than the model, and comparing epoch 40 against epoch
+    20 -- or one run against another -- would be meaningless.
+
+    Yields (noisy, clean, label) exactly like SpeechNoiseMixtures, so training
+    code does not care which one it is handed.
+    """
+
+    def __init__(self, split):
+        root = os.path.join(PROJECT_ROOT, "generated_test_mixtures")
+        self.root = root
+        path = os.path.join(root, "test_mixtures_manifest.csv")
+        with open(path, newline="", encoding="utf-8-sig") as f:
+            self.rows = [r for r in csv.DictReader(f) if r["split"] == split]
+        if not self.rows:
+            raise RuntimeError(
+                f"no frozen mixtures for split {split!r}. Run "
+                f"generate_test_mixtures.py --apply first.")
+        self.classes = read_noise_classes()
+        self.split = split
+
+    def __len__(self):
+        return len(self.rows)
+
+    def describe(self, idx):
+        r = self.rows[idx]
+        return {
+            "noisy": load_wav(os.path.join(self.root, r["noisy_file"])),
+            "clean": load_wav(os.path.join(self.root, r["clean_file"])),
+            "label": int(r["label"]),
+            "category": r["category"],
+            "snr_db": float(r["snr_db"]),
+            "language": r["language"],
+            "index": int(r["index"]),
+        }
+
+    def __getitem__(self, idx):
+        m = self.describe(idx)
+        return m["noisy"], m["clean"], m["label"]
+
+
 def self_test():
     print(f"categories are sampled uniformly, SNR ~ U({SNR_MIN_DB:g}, "
           f"{SNR_MAX_DB:g}) dB, window {CLIP_SECONDS:g}s @ {TARGET_SR} Hz\n")

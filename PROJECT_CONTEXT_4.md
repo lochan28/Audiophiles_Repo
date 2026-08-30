@@ -347,8 +347,34 @@ audio. A training batch of 16 with forward and backward passes peaks at
 1.62 GB of the 8 GB available, so there is room for a much larger batch or a
 wider model. Compute is nowhere near the constraint on this machine.
 
-`matplotlib` was added to the environment for `visualize_pipeline.py` and is
-not in the install command below; add it when rebuilding.
+**Measured training speed, and what it changes.** One epoch over the 1292
+training clips plus the 143 frozen validation mixtures takes **11.3 seconds**,
+and a full perceptual evaluation adds about 12 seconds. So 40 epochs is under
+9 minutes and 150 epochs is roughly half an hour. Training this model is not
+an overnight job, and several planning assumptions were built around the idea
+that it would be. Profiled, an epoch is 9.2 s of GPU work against 0.7 s of
+data loading, so it is firmly **GPU-bound**.
+
+Four consequences, all worth acting on:
+
+- **`EPOCHS = 40` is too conservative.** With early stopping at 12 epochs of
+  patience, set it to 150 and let the model halt itself when it plateaus.
+  Guessing the right number in advance is unnecessary when the guard exists.
+- **Run many experiments rather than few.** CRN against TCN, hidden 256
+  against 128, aux weight 0.2 against 0.0, and the three shortlisted
+  optimisers is roughly a dozen runs — an afternoon, not a week. This is what
+  makes the comparison dashboard worth building rather than a nicety.
+- **Raise the batch size.** A batch of 16 uses 1.62 GB of 8 GB while the GPU
+  is the bottleneck, so 32 or 48 would use the card properly and should cut
+  epoch time noticeably.
+- **Do not add DataLoader workers.** Data loading is 6% of an epoch;
+  parallelising it would buy essentially nothing. This was worth measuring
+  rather than assuming — the first guess was that mixing audio on the fly
+  would dominate, and it does not.
+
+`matplotlib` was added to the environment for `visualize_pipeline.py`, and
+`pesq`, `pystoi` and `scipy` for `evaluate.py`. None are in the install
+command below; add them when rebuilding.
 
 The RTX 5060 is **Blackwell**, compute capability `sm_120`. This matters when
 reinstalling: only CUDA 12.8 and newer builds contain `sm_120` kernels, so
