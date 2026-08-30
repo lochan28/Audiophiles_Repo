@@ -13,10 +13,10 @@ each decision, is in `PROJECT_CONTEXT_4.md` in this folder.
 The project folder is literally `C:\speach data\` — "speach", not
 "speech". Older notes use the wrong spelling.
 
-**Where the project is:** data preparation and the **mixing pipeline**
-are done, and the frozen evaluation mixtures are on disk. The GPU works.
-The **model and training are not started** — there is no `model.py` and
-nothing in `models/`. Building CRN and TCN is the next step.
+**Where the project is:** data preparation, the **mixing pipeline**, the
+frozen evaluation mixtures, and the **CRN model** are all done. The GPU
+works. **Training has not started** - there is no training script and
+nothing in `models/`. See `CRN_STEPS.md` for the stage-by-stage record.
 
 ## Layout
 
@@ -154,23 +154,27 @@ plan did, but a deployed real-time system has to process audio as small
 packets arrive rather than waiting several seconds for a full clip.
 
 - **Chunk size: 100 ms.** Audio is processed in 100 ms chunks.
-- **Lookahead: 2–3 chunks.** Output for a chunk is finalized only after
-  2–3 further chunks have been buffered — a little near-future audio
-  measurably helps quality, especially at chunk boundaries.
-- **Total latency budget: 500–800 ms.**
+- **Lookahead: 36 ms total** - 16 ms from the STFT framing
+  (unavoidable) plus 2 frames x 10 ms from the layers.
+- **Total latency budget: 500-800 ms.** The built model uses ~136 ms.
 
-The budget breaks down as 100 ms of mandatory chunk-wait (a full chunk
-must arrive before it can be processed) plus 200–300 ms of lookahead
-buffer, so **300–400 ms is structural delay** spent before the network
-computes anything, leaving **100–400 ms** for inference and pipeline
-overhead depending on which end of the range is targeted.
+**The 2-3 chunk (200-300 ms) lookahead in older notes was wrong** and
+has been revised down. Lookahead is dead time: waiting for audio that
+has not arrived, unrecoverable with faster hardware. Its benefit is
+steeply front-loaded, arriving within a few tens of milliseconds, and
+DCCRN won its real-time category on 37 ms. Measured end to end:
 
-**Do not increase the chunk size.** Both delays scale directly with it,
-so a 200–250 ms chunk would mean 200–250 ms of chunk-wait plus
-400–750 ms of lookahead — chunking and buffering alone could consume the
-whole budget. Shrinking it only adds margin. The one thing that could
-force a change is measured inference time on the real target embedded
-hardware, unknowable until a model exists and is benchmarked there.
+```
+36 ms lookahead + 100 ms chunk wait + 0.5 ms compute = ~136 ms
+```
+
+That is inside ITU-T G.114's preferred sub-150 ms range for two-way
+conversation, which 500-800 ms would not have been.
+
+**Do not increase the chunk size.** The chunk-wait scales directly with
+it. Shrinking only adds margin - a 20 ms chunk would reach ~56 ms
+total, at the cost of 5x more frequent inference calls. That is a
+tuning step after a model works, not a starting constraint.
 
 **Architecture requirements this imposes:**
 
@@ -187,11 +191,42 @@ typically use both together.
 
 ## Model architecture
 
-No model code exists yet. **DCCRN is not the final choice** — the plan
-is staged:
+**The CRN is built** in `scripts/model_crn.py`, 3,018,072 parameters,
+untrained. `python scripts/model_crn.py` runs the self-test for all six
+build stages and doubles as a regression test. `CRN_STEPS.md` has the
+stage-by-stage record.
 
-1. **CRN and TCN first.** These are the two architectures actually being
-   built and compared.
+```
+STFT      301 frames x 257 pitch bands per 3 s clip
+ENCODER   5 conv layers, pitch 257->129->65->33->17->9      245,472
+          time never squeezed
+MEMORY    2 unidirectional LSTM x 256                     2,266,240
+          state carries between 100 ms chunks
+AUX HEAD  7 noise classes, removed for deployment            16,903
+DECODER   5 layers back to 257, skip connections             489,457
+          sigmoid mask, applied to the noisy spectrogram
+                                              DEPLOYED    3,001,169
+```
+
+All tunable values sit in a marked block at the top of the file,
+separated from constants locked by data on disk. **Do not edit the
+LOCKED block** - sample rate, clip length, hop and class count are fixed
+by the dataset and the frozen mixtures.
+
+Verified by the self-test, not assumed: lookahead is exactly 2 frames
+(checked by perturbing one input frame and seeing which outputs react,
+with controls at 0 and 6); streaming a clip in halves with the LSTM
+state passed across is bit-identical to processing it whole (0.00e+00);
+stripping the aux head changes the audio by exactly 0.00. On the 5060:
+13.9 ms per 3 s clip, 216x real time, batch of 16 fwd+bwd in 1.62 GB.
+
+### The staged plan
+
+No model has been trained yet. **DCCRN is not the final choice** — the
+plan is staged:
+
+1. **CRN and TCN first.** The CRN is built; the TCN is not. These two
+   get trained and compared before anything else.
 2. **If that works out well, DCCRN is the next step** — an upgrade on top
    of a working system, not the starting point.
 3. **What ships is DCCRN if it is achieved; otherwise whichever of CRN
@@ -207,7 +242,7 @@ competition in 2020. Reported: **PESQ ~3.5** on one test setup and
 **~3.2** on a tougher, more realistic test set (our target is 2.5), a
 human listener quality score of **~3.4 out of 5**, and about **3 ms per
 frame on an ordinary laptop CPU** using only **37 ms of lookahead** —
-well under our planned 200–300 ms buffer.
+comparable to the 36 ms our own CRN ended up with.
 
 **Do not treat those as our expected numbers.** They came from very
 large standard datasets and everyday environmental noise (cafe chatter,
@@ -295,6 +330,24 @@ three splits.
 Freezes the validation and testing mixtures at a fixed seed. Dry run by
 default, `--apply` to write. Already run.
 
+### `model_crn.py`
+
+The CRN itself - see the architecture section. Run directly for the
+self-test.
+
+### `visualize_pipeline.py`
+
+Draws the pipeline working on real project audio: clean speech, the noise
+added, the mixture, the spectrogram, the reconstruction, and the error.
+`--zoom START END` instead stacks clean/noise/mixture spectrograms over a
+short window. Figures go to `logs/figures/`, gitignored. Needs matplotlib.
+
+### `add_noise_class.py`
+
+Installs a new noise category dropped into `new_noise_class/` as
+`<class>/train|validation|testing/`. Dry run by default. Refuses a class
+missing from any split.
+
 ### `rechunk_long_clips.py` / `rechunk_long_clips_no_manifest.py`
 
 Earlier 5-second-ceiling rechunkers, largely superseded by
@@ -329,4 +382,5 @@ Earlier 5-second-ceiling rechunkers, largely superseded by
   real field names from the first example of each language — if they
   don't match, fix the two spots marked `# FIELD NAME BELOW`.
 - Requires `datasets`, `huggingface_hub`, `soundfile`, `numpy`, `torch`,
-  `torchaudio`.
+  `torchaudio`, `matplotlib`. Still needed for evaluation and NOT yet
+  installed: `pesq`, `pystoi`.

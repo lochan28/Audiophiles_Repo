@@ -56,10 +56,11 @@ can use that pairing directly as input and target. Reinforcement learning
 needs a reward signal and doesn't have a natural advantage here, so it adds
 complexity without a real benefit for this problem.
 
-The model itself is a CNN, structured as an encoder–decoder (U-Net style)
-network: it takes noisy audio in, compresses it down through a series of
-convolutional layers, then expands it back out to produce clean audio as the
-output.
+The model is a CNN encoder–decoder (U-Net style): it takes noisy audio in,
+compresses it through convolutional layers, then expands it back out. In the
+built version this is a **CRN** — the same encoder–decoder with a recurrent
+memory in the middle, so the network can use what it heard seconds ago rather
+than judging each moment alone. See Section 4.
 
 ## 3. How the audio is represented: STFT vs DWT
 
@@ -80,6 +81,20 @@ Now that every clip in the project is a fixed 3.000 seconds at 16 kHz
 (Section 7), an STFT of any clip has a fixed, known frame count, so the
 network can be built with a fixed input size rather than needing to handle
 variable-length input.
+
+**Settled in the built model: STFT only, no DWT.** The CRN uses a 512-sample
+window (32 ms) with a 160-sample hop (10 ms), giving 301 snapshots of 257
+pitch bands per clip. Two constraints fixed those numbers. The hop must divide
+the 1600-sample streaming chunk exactly, so chunk boundaries land on frame
+boundaries — 160 gives exactly 10 frames per chunk. And the window length is a
+direct trade between the two noise families: shorter sharpens gunfire and
+mortar onsets, longer separates rotor and engine hum, so 32 ms sits in the
+middle. It is exposed as `N_FFT` in the model's tuning block and is the first
+thing worth sweeping once a baseline exists.
+
+DWT was not used. It remains a possible addition if impulsive noise proves
+hard for the STFT front end, but nothing so far suggests it is needed, and it
+would complicate the streaming path.
 
 ## 4. Model architecture notes
 
@@ -105,6 +120,57 @@ variable-length input.
   between chunks, because of the real-time streaming decision in
   Section 5. This constrains which layer types either candidate size can
   use — nothing that needs to see the whole clip at once.
+
+### The CRN is built (step 1 of the plan below)
+
+`scripts/model_crn.py` holds a complete, working CRN. It is untrained — no
+training script exists yet — but every structural claim in it has been
+verified by a self-test that runs with `python scripts/model_crn.py`.
+`CRN_STEPS.md` is the stage-by-stage record.
+
+```
+noisy waveform
+   |  STFT           301 snapshots of 257 pitch bands per 3 s clip
+   v
+ENCODER   5 conv layers, pitch 257 -> 129 -> 65 -> 33 -> 17 -> 9    245,472
+   |      time never squeezed; 128 patterns x 9 bands per frame
+   v
+MEMORY    2 unidirectional LSTM layers x 256                      2,266,240
+   |      state carries between 100 ms chunks
+   +----> AUX HEAD   7 noise categories, removed for deployment      16,903
+   |
+   v
+DECODER   5 layers back up to 257, fed by skip connections          489,457
+   |      sigmoid output: a "keep this much" dial per band per frame
+   v
+mask x noisy spectrogram, noisy phase reused, back to audio
+                                                          TOTAL  3,018,072
+                                                       DEPLOYED  3,001,169
+```
+
+**3.0 million parameters**, close to DCCRN's 3.7 M. What the self-test
+establishes, beyond shapes:
+
+- **Lookahead is exactly 2 frames**, verified by changing one input frame and
+  confirming which outputs react — not by reading padding numbers, which would
+  miss a silent leak. Controls at 0 and 6 frames confirm the check tracks the
+  setting rather than always passing.
+- **Streaming works exactly.** Feeding a clip whole and feeding it in two
+  halves with the LSTM state passed across gives bit-identical results
+  (0.00e+00). Starting the second half cold gives a visibly different answer,
+  so the state genuinely carries information.
+- **The aux head really is removable.** Stripping it changes the audio by
+  exactly 0.00, confirming the Section 11 claim rather than assuming it.
+- **Measured speed on the RTX 5060:** 13.9 ms per 3-second clip, 216x real
+  time; a batch of 16 with forward and backward fits in 1.62 GB of 8 GB.
+
+Three findings from building it are recorded in `CRN_STEPS.md` because they
+look like bugs and are not: the STFT framing costs 16 ms of lookahead that
+cannot be avoided; LSTM influence fades after roughly 280 ms at random
+initialisation rather than persisting indefinitely; and a masked spectrogram
+can gain energy after `istft` and re-analysis, because a masked spectrogram is
+generally not the spectrogram of any real signal — the same limitation as
+reusing the noisy phase, and exactly what DCCRN exists to lift.
 
 ### The architecture plan: CRN and TCN first, DCCRN as the upgrade
 
@@ -135,7 +201,7 @@ competition in 2020. The reported figures:
 - A human listener quality score of about **3.4 out of 5**.
 - On speed, one frame of audio took only about **3 milliseconds** to process
   on an ordinary laptop CPU, using just **37 milliseconds of lookahead** —
-  well under the 200–300 ms lookahead buffer planned in Section 5.
+  comparable to the 36 ms our own CRN ended up with (Section 5).
 
 **These should not be read as numbers we expect to match directly.** They
 came from training on very large, standard datasets and everyday
@@ -189,36 +255,52 @@ audio as small packets arrive, not wait several seconds for a full clip to
 accumulate.
 
 **The decision.** The model processes audio in **100 millisecond chunks**.
-Before finalizing its output for the earliest chunk it is working on, it
-buffers **2 to 3 chunks of lookahead**, since seeing a little bit of
-near-future audio measurably helps quality — especially at chunk boundaries,
-where a network with no view past the edge has nothing to work from. The
-**total latency budget for the whole system is 500 to 800 milliseconds**.
+Before finalizing its output it looks a little way into the future, since
+seeing near-future audio measurably helps quality — especially at chunk
+boundaries, where a network with no view past the edge has nothing to work
+from. The **total latency budget for the whole system is 500 to 800
+milliseconds**.
 
-**The math behind why this fits.** Two sources of delay are structural: they
-are spent before the network does any actual computation.
+**REVISED: the lookahead is 36 ms, not the 200–300 ms first planned.** The
+original figure was 2–3 whole chunks. That was far more than the evidence
+supports: DCCRN won its real-time category on 37 ms, and the benefit of
+lookahead is steeply front-loaded — it exists to help judge whether a sudden
+loud thing is a plosive or the start of a gunshot, and that evidence arrives
+within a few tens of milliseconds. Spending 200–300 ms bought almost nothing
+and cost the budget dearly, because lookahead is **dead time**: waiting for
+audio that has not arrived, unrecoverable by any amount of faster hardware.
 
-- The chunk size itself contributes a mandatory **100 ms**, since a full
-  chunk has to arrive before it can be processed at all.
-- Buffering 2–3 chunks of lookahead adds another **200–300 ms** on top.
+**What the built model actually costs**, measured rather than estimated
+(Section 4, and `CRN_STEPS.md` step 3):
 
-Combined, that is roughly **300–400 ms of structural delay**, leaving roughly
-**100–400 ms** of the budget still available for the model's own inference
-time and any other pipeline overhead, depending on which end of the
-500–800 ms range is being targeted.
+| source | cost |
+| --- | --- |
+| STFT framing, unavoidable | 16 ms |
+| layer lookahead, 2 frames x 10 ms | 20 ms |
+| **lookahead total** | **36 ms** |
+| chunk wait, a full chunk must arrive | 100 ms |
+| inference, measured on the RTX 5060 | 0.5 ms |
+| **end to end** | **≈136 ms** |
 
-**Why not a larger chunk.** Growing the chunk size to something like
-200–250 ms would not loosen this budget, it would *tighten* it, since both
-the mandatory chunk-wait delay and the lookahead-buffer delay scale directly
-with chunk size — a 250 ms chunk means 250 ms of chunk-wait plus 500–750 ms
-of lookahead. At that size, chunking and buffering alone could already
-consume the entire latency budget before the model runs at all. So there is
-no current reason to increase chunk size, and shrinking it further would only
-add more safety margin.
+That leaves the 500–800 ms budget almost entirely unspent. It also lands
+inside ITU-T G.114's preferred range for two-way conversation, under 150 ms
+one-way — worth knowing, because 500–800 ms would have been past the point
+where people start talking over each other. The ANC is only one element in a
+chain that also has radio, codec and network delay.
 
-The one thing that could still force a change later is the model's **actual
-measured inference time on the real target embedded hardware**, which cannot
-be known until a model exists and is benchmarked there.
+**Why not a larger chunk.** Growing the chunk to 200–250 ms would not loosen
+the budget, it would *tighten* it: the mandatory chunk-wait scales directly
+with chunk size. There is no reason to increase it, and shrinking it would
+only add margin — dropping to a 20 ms chunk would put the total near 56 ms,
+matching the competition standard, at the cost of five times more frequent
+inference calls. That is a tuning step once a model works, not a starting
+constraint.
+
+The one thing that could still force a change is the model's **measured
+inference time on the real target embedded hardware**. There is now a first
+data point — 0.46 ms of compute per 100 ms of audio, 216x faster than real
+time — but on the RTX 5060, **not** the Jetson AGX Orin the problem statement
+names. Compute is nowhere near the constraint; waiting is.
 
 **This requires an architecture decision, not just a data-chunking
 decision.** Two requirements follow for the network itself:
@@ -258,6 +340,15 @@ with the CUDA build and verified end to end:
 - Verified with real kernel execution, not just `cuda.is_available()`:
   a 4096³ fp32 matmul (~4.9 TFLOP/s), a `torchaudio` resample on device,
   a Conv1d forward and backward pass, and a complex-valued STFT.
+
+**Measured, now that a model exists.** The CRN runs a 3-second clip in
+13.9 ms, 216x faster than real time, using 0.46 ms of compute per 100 ms of
+audio. A training batch of 16 with forward and backward passes peaks at
+1.62 GB of the 8 GB available, so there is room for a much larger batch or a
+wider model. Compute is nowhere near the constraint on this machine.
+
+`matplotlib` was added to the environment for `visualize_pipeline.py` and is
+not in the install command below; add it when rebuilding.
 
 The RTX 5060 is **Blackwell**, compute capability `sm_120`. This matters when
 reinstalling: only CUDA 12.8 and newer builds contain `sm_120` kernels, so
@@ -697,8 +788,12 @@ for suppressing them.
 `assault_rifle` has 137 clips against `mortar`'s 45 (full table in Section 17). The classification loss will need class weighting or balanced sampling,
 otherwise the branch can score well by favouring the common classes.
 
-**Removing it for deployment:** this classification branch is only a
-training aid. It is not needed to produce the final clean-audio output, so
+**Removing it for deployment (verified).** In the built model this branch is
+16,903 parameters, 0.6% of the total, and stripping it changes the enhanced
+audio by exactly 0.00 — checked in the self-test rather than assumed. The
+deployed model is 3,001,169 parameters instead of 3,018,072.
+
+This classification branch is only a training aid. It is not needed to produce the final clean-audio output, so
 it gets physically removed before deployment, leaving only the shared trunk
 and the main clean-audio branch. This makes the deployed model smaller and
 faster — directly useful for the embedded, low-latency requirement — without
@@ -891,6 +986,23 @@ rather than the working directory, so they can be run from any location.
   write the frozen validation and testing mixtures. Dry run by default;
   pass `--apply` to write. Already run — the 268 pairs are on disk.
 
+- **`add_noise_class.py`** — installs a new noise category dropped into
+  `new_noise_class/` as `<class>/train|validation|testing/`. Cuts the clips to
+  exact 3.000 s, renumbers them, appends the label, and rebuilds the
+  manifests. Dry run by default. Refuses a class missing from any split, which
+  is how an earlier `siren` category disappeared unnoticed.
+- **`model_crn.py`** — the CRN itself (Section 4). Run it directly to execute
+  the self-test for all six build stages; it doubles as a regression test for
+  the whole model. All tunable values sit in a marked block at the top,
+  separated from constants that are locked by data already on disk.
+- **`visualize_pipeline.py`** — draws what the pipeline is doing on real
+  project audio: clean speech, the noise added, the mixture, the spectrogram
+  the network sees, the reconstruction, and the error between them. `--zoom
+  START END` instead shows clean, noise and mixture spectrograms stacked over
+  a short window, which is where the horizontal-versus-vertical contrast that
+  makes spectrograms worth using becomes visible. Figures go to
+  `logs/figures/` and are gitignored, being reproducible in seconds.
+
 An early draft named `collect_speech_data.py` is referenced in older notes;
 it is **not present in this project folder**.
 
@@ -915,10 +1027,12 @@ it is **not present in this project folder**.
   per-category evaluation numbers rather than treating it as a regression.
 - Held-out-category generalization testing is not set up, since all seven
   categories appear in all three splits (Section 7).
-- The model's inference time on the real target embedded hardware is
-  unknown and cannot be measured until a model exists and is benchmarked
-  there. It is the one measurement that could still force the 100 ms chunk
-  size or the 2–3 chunk lookahead to change (Section 5).
+- The model's inference time on the real target embedded hardware is still
+  unknown. There is now a first data point on the RTX 5060 — 0.46 ms of
+  compute per 100 ms of audio, leaving end-to-end latency around 136 ms — but
+  the problem statement names a Jetson AGX Orin, which has not been tested.
+  Compute is far from the constraint here, so this is unlikely to force the
+  chunk size or lookahead to change (Section 5).
 
 **Carried over, still unresolved:**
 

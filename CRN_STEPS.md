@@ -1,200 +1,307 @@
 # CRN build — step tracker
 
-The model is being built in small stages. Each one is written, run, and
-checked before the next begins, so a failure is always traceable to the piece
-that just changed.
+The model was built in small stages. Each one was written, run, and checked
+before the next began, so a failure was always traceable to the piece that had
+just changed.
 
 ## Where we are
 
 ```
 [x] step 1   Audio <-> spectrogram          DONE
-[ ] step 2   The encoder                    <-- WE ARE HERE
-[ ] step 3   Lookahead control
-[ ] step 4   The LSTM memory
-[ ] step 5   Decoder and mask
-[ ] step 6   Noise classifier head, on GPU
+[x] step 2   The encoder                    DONE
+[x] step 3   Lookahead control              DONE
+[x] step 4   The LSTM memory                DONE
+[x] step 5   Decoder and mask               DONE
+[x] step 6   Noise classifier head, on GPU  DONE
+
+    THE MODEL IS COMPLETE.  Next: the training script.  <-- WE ARE HERE
 ```
 
-Everything lives in `scripts/model_crn.py`. It grows one stage at a time, and
-every stage adds a check to its `self_test()`.
+Everything is in `scripts/model_crn.py`, 3,018,072 parameters, running on the
+RTX 5060.
 
-**To see everything built so far still works:**
+**To check the whole model still works:**
 
 ```
 python scripts/model_crn.py
 ```
 
-That re-runs every check from every completed step, so it doubles as a
-regression test. If it passes, the foundation is sound.
+That runs every check from all six steps in one go, so it doubles as a full
+regression test. If it passes, nothing has been broken.
 
----
-
-## step 1 — Audio to spectrogram and back    ✅ DONE
-
-**What it does, plainly.** Turns sound into a picture, and the picture back
-into sound.
-
-Your 3-second clip is 48,000 numbers describing a wiggly line. A network
-cannot easily see "that is a helicopter" in a wiggly line. So we convert it
-into a **spectrogram**: imagine a piano with 257 keys, photographed every 10
-milliseconds, recording which keys are pressed and how hard. Time runs left to
-right, pitch runs bottom to top, brightness is loudness.
-
-This matters because the two things we care about look completely different in
-that picture. A voice holds a few pitches for a moment, drawing **horizontal
-lines**. A gunshot or mortar hits every pitch at once for an instant, drawing
-a **vertical line**. Separating horizontal from vertical in a picture is
-something a network is good at. Separating two tangled wiggly lines is not.
-
-**The numbers.**
-
-| | |
-| --- | --- |
-| 3-second clip | becomes 301 snapshots |
-| each snapshot | splits sound into 257 pitch bands |
-| 100 ms streaming chunk | exactly 10 snapshots, no ragged edges |
-| round-trip error | 9.5e-07 — lossless for practical purposes |
-
-**What went wrong, and what it cost.** The first attempt used `center=False`,
-meaning the first snapshot starts exactly at sample 0. It crashed. The reason
-is that the Hann window — the soft fade applied to each snapshot so its edges
-do not click — is exactly zero at its first sample. Sample 0 therefore gets
-multiplied by zero and cannot be recovered, and PyTorch refused rather than
-returning quietly wrong audio.
-
-The fix is `center=True`, which pads a little silence at both ends so every
-real sample is covered by several overlapping snapshots. Reconstruction is
-then essentially perfect.
-
-**But it is not free, and step 3 must account for it.** Each snapshot now sits
-centred on its timestamp, so it reads 256 samples — **16 ms** — past the
-moment it claims to represent. That is lookahead the network receives before a
-single layer exists. With 16 ms from the framing plus 2 frames of layer
-lookahead, the total lands at 36 ms, close to the 37 ms DCCRN operated on.
-
-**Seeing it work.**
+**To see it working on real audio:**
 
 ```
 python scripts/visualize_pipeline.py
-```
-
-Draws a real mixture from the frozen evaluation set through every stage: clean
-speech, the noise added, the mixture, the spectrogram, the reconstruction, and
-the error between input and output. The error panel is a flat line at zero,
-which is the point.
-
-```
 python scripts/visualize_pipeline.py --zoom 0.40 1.05 --fmax 4
 ```
 
-Zooms in and shows clean, noise and mixture spectrograms stacked, sharing one
-brightness scale. This is where the horizontal-versus-vertical contrast
-becomes obvious.
+Figures land in `logs/figures/` and are gitignored, being reproducible in
+seconds. Other options: `--split`, `--index`, `--category mortar`.
 
-Other options: `--split`, `--index`, and `--category mortar` to auto-pick the
-loudest example of a noise category. Figures land in `logs/figures/` and are
-gitignored, being reproducible in seconds.
+## The finished shape
 
----
-
-## step 2 — The encoder    ⬅ CURRENT
-
-**What it will do, plainly.** Slide small windows over the spectrogram
-hunting for shapes, the same machinery that finds edges in photographs. Five
-layers, each squeezing the pitch axis in half while learning more patterns.
-
-The point of squeezing is to force the network to summarise. It cannot keep
-all 257 pitch bands, so it must decide what matters — which is how it learns
-that stacked rungs mean a voice and a full-height column means an impact.
-
-**Frequency shrinks:** 257 → 129 → 65 → 33 → 17 → 9
-**Patterns learned per layer:** 16 → 32 → 64 → 128 → 128
-
-Time length is never squeezed. Only pitch is. Compressing time would blur
-exactly the sudden events we most need to catch.
-
-**How it gets checked.** Shapes at every layer are what they should be, time
-length is preserved end to end, and the output is the expected size going into
-the memory stage.
+```
+noisy waveform
+   |  STFT                    301 snapshots, 257 pitch bands
+   v
+ENCODER     5 layers, pitch 257 -> 129 -> 65 -> 33 -> 17 -> 9      245,472
+   |        time never squeezed; 128 patterns x 9 bands per frame
+   v
+MEMORY      2 LSTM layers x 256, one direction                   2,266,240
+   |        carries state between 100 ms chunks
+   +------> AUX HEAD  7 noise categories, removed for deployment     16,903
+   |
+   v
+DECODER     5 layers back up 9 -> 257, fed by skip connections      489,457
+   |        ends in a sigmoid: a "keep this much" dial per band
+   v
+mask x noisy spectrogram, noisy timing reused, back to audio
+                                                          TOTAL  3,018,072
+                                                       DEPLOYED  3,001,169
+```
 
 ---
 
-## step 3 — Lookahead control
+## step 1 — Audio to spectrogram and back    ✅
 
-**What it will do.** Decide how far into the future the model may peek.
+**What it does.** Turns sound into a picture and back. Imagine a piano with
+257 keys photographed every 10 ms, recording which keys are pressed and how
+hard. Time runs left to right, pitch bottom to top, brightness is loudness.
 
-Peeking helps: seeing a few milliseconds ahead makes it far easier to judge
-whether a sudden loud thing is a plosive like /p/ or the start of a gunshot.
-But peeking is the most expensive thing in a real-time system, because waiting
-for future audio is dead time — you cannot optimise it away with faster
-hardware.
+This matters because a voice holds a few pitches and draws **horizontal
+lines**, while a gunshot hits every pitch at once and draws a **vertical
+line**. Separating horizontal from vertical in a picture is something a
+network is good at. Separating two tangled wiggly lines is not.
 
-The budget is roughly 40 ms total, of which **16 ms is already spent** by the
-step 1 framing.
+| | |
+| --- | --- |
+| 3-second clip | 301 snapshots |
+| each snapshot | 257 pitch bands |
+| 100 ms chunk | exactly 10 snapshots, no ragged edges |
+| round-trip error | 9.5e-07 — lossless in practice |
 
-**How it gets checked.** Mechanically, not by inspection: change the input at
-one moment in time, then confirm that every output earlier than the allowed
-window is bit-for-bit unchanged. This is the only reliable way to catch
-accidental future leakage, which otherwise stays invisible until deployment.
+**What went wrong.** The first attempt used `center=False` and crashed. A Hann
+window is exactly zero at its first sample, so sample 0 gets multiplied by
+zero and cannot be recovered; PyTorch refused rather than returning quietly
+wrong audio. The fix, `center=True`, pads silence at both ends so every real
+sample is covered several times.
 
----
-
-## step 4 — The LSTM memory
-
-**What it will do.** Give the network a memory, so it understands "this rotor
-has been droning for two seconds" instead of judging each 10 ms snapshot in
-isolation.
-
-This is also what makes streaming work. The memory is a small piece of state
-carried from one 100 ms chunk to the next, so the model never starts blind.
-
-**How it gets checked.** Feed a clip whole, then feed it in two halves passing
-the memory across the join, and confirm the results match. If they do not, the
-model cannot stream.
+**What that cost.** Each snapshot now sits centred on its timestamp and reads
+256 samples — **16 ms** — past the moment it claims to represent. That is
+lookahead the network gets before a single layer exists, and step 3 had to
+budget for it.
 
 ---
 
-## step 5 — Decoder and mask
+## step 2 — The encoder    ✅
 
-**What it will do.** Expand back to full resolution and produce a **mask** —
-a value between 0 and 1 for every pitch band at every moment, meaning "keep
-this much of it". Multiply the mask by the noisy spectrogram, convert back to
-audio, and that is the enhanced output.
+**What it does.** Slides small windows over the spectrogram hunting for
+shapes, the same machinery that finds edges in photographs. Five layers, each
+looking for more kinds of pattern while halving the pitch axis.
 
-The decoder mirrors the encoder and receives **skip connections** from it, so
-the fine detail thrown away during squeezing can be restored.
+```
+pitch      257 -> 129 -> 65 -> 33 -> 17 -> 9
+patterns     1 ->  16 -> 32 -> 64 -> 128 -> 128
+time                    301 frames throughout
+```
 
-Note this masks loudness only and reuses the noisy timing information
-unchanged. That is this architecture's ceiling, and precisely what DCCRN's
-complex-valued layers exist to lift later.
+**Why squeezing is the point.** The network cannot carry all 257 bands
+through, so it has to decide what is worth keeping. That constraint is what
+forces it to learn the general rule — rungs mean voice, columns mean impact —
+rather than memorising particular clips.
 
-**How it gets checked.** A full pass, waveform in to waveform out, with the
-output the same length as the input and the mask staying within range.
+**Time is never squeezed.** Compressing it would blur exactly the sudden
+events this system exists to catch, and would break the fixed
+10-frames-per-chunk relationship streaming depends on.
+
+Ends at 128 patterns x 9 bands = **1152 numbers per frame**. 245,472
+parameters.
+
+**One note in the code.** BatchNorm mixes statistics across the whole clip
+while *training*, including future frames. At inference it uses stored running
+statistics, so the deployed model has no leakage — which is why step 3's
+causality check runs in eval mode.
 
 ---
 
-## step 6 — Noise classifier head, on GPU
+## step 3 — Lookahead control    ✅
 
-**What it will do.** Add the second small branch that guesses which of the
-seven noise categories is present. It never receives anything the deployed
-system would not have — it only reads the shared trunk — and it gets removed
-before deployment.
+**What it does.** Lets the model peek at the future, but only a measured
+amount, and proves it cannot cheat.
 
-**How it gets checked.** Seven output numbers per clip, the whole model runs
-on the RTX 5060, and we record the real parameter count and memory use.
+Peeking helps judge whether a sudden loud thing is a /p/ or the start of a
+gunshot. But it is **dead time**: waiting for audio that has not arrived, and
+unlike compute you cannot buy it back with faster hardware.
+
+```
+framing   16 ms   (inherited from step 1, unavoidable)
+layers    20 ms   (2 frames x 10 ms, our choice)
+          ------
+total     36 ms
+```
+
+Essentially what DCCRN ran on (37 ms) when it won its real-time category. The
+original plan was 200–300 ms.
+
+The two frames go to the **deepest** layers, `[0, 0, 0, 1, 1]`, where abstract
+features make a glimpse of the future worth more.
+
+**How it is checked.** Not by reading padding numbers off the layers — one
+mis-set padding anywhere would leak silently and stay invisible until
+deployment. Instead the test changes one input frame and watches which outputs
+react:
+
+```
+changed input frame 60 -> outputs 58..68 reacted
+   2 frames ahead (the budget, used fully), 8 frames behind (free)
+```
+
+Two controls keep it honest: `lookahead=0` reacts no earlier than frame 60
+itself, and `lookahead=6` reacts at 54, so the check genuinely tracks the
+setting rather than always passing.
+
+**A mistake worth keeping.** The framing measurement first printed 10 ms,
+contradicting the 16 ms in the budget. Frames sit 160 samples apart but each
+window reaches 256 samples past its centre, so counting whole frames rounds
+256 down to 1 and understates the wait. Latency is set by the last sample a
+frame needs, so the test now measures that directly: frame 150 sits at sample
+24000 and still reacts to sample 24255. **This is why the budget is counted in
+milliseconds, not frames.**
 
 ---
 
-## After the six steps
+## step 4 — The LSTM memory    ✅
 
-Not part of this sequence, but next in line:
+**What it does.** Gives the model a sense of what came before. The encoder
+judges each 10 ms snapshot alone; the memory knows a rotor has been droning
+for two seconds. Think of a notebook carried from moment to moment, with
+dials deciding what to rub out, what to write in, and what to say out loud.
 
-1. **Training script** — the loop that actually teaches it.
+Two layers of 256, **one direction only**. A bidirectional LSTM reads the clip
+backwards, so it needs the end before it can produce the start — unusable in
+real time at any budget, and a quiet way to build something undeployable. The
+code asserts against it.
+
+**The result streaming depends on:**
+
+```
+whole clip vs two halves with the state passed across:  0.00e+00
+same second half started cold instead:                  1.10e-01
+```
+
+Bit-identical, not merely close. Processing 100 ms at a time gives exactly the
+same answer as processing the whole clip. The second line proves the first
+means something: without the carried memory the answer visibly changes, so the
+state really carries information.
+
+**Where the model's size lives.** 2,266,240 parameters, about 90% of the model
+at that point. This is also where overfitting will start on 1292 clips, so
+`LSTM_HIDDEN` is the first knob to reach for.
+
+**A mistake worth keeping.** The test first asserted that changing frame 60
+would ripple to the clip's last frame, since an LSTM's memory is unbounded in
+theory. It stopped at frame 88 and failed. Influence *fades*: at random
+initialisation it drops below measurable after about 28 frames — **280 ms** of
+effective memory. Real, but not infinite. How much is retained after training
+is something training decides, not architecture.
+
+**Found for later.** Splitting the *encoder* at a chunk boundary disagrees for
+8 frames, because its convolutions need the frames before the cut. Real
+streaming must cache those 8 frames per layer. That is a deployment concern,
+not a training one.
+
+---
+
+## step 5 — Decoder and mask    ✅
+
+**What it does.** Walks back up, `9 -> 17 -> 33 -> 65 -> 129 -> 257`, with
+each layer handed the matching encoder layer's output as a **skip
+connection**. The encoder deliberately threw detail away; the skips hand it
+back, so the mask can be placed precisely instead of painted in broad strokes.
+
+**The output is not audio.** It is a **mask**: a "keep this much" dial between
+0 and 1 for every pitch band at every moment, 257 x 301 dials per clip. The
+model never rebuilds sound from scratch, it decides how much of what is
+already there to let through. Multiplying is gentler to learn than inventing a
+signal, and cannot hallucinate sound that was never present.
+
+Untrained, the mask averages **0.484** — "keep half of everything, everywhere",
+exactly what random weights should give.
+
+Decoder 489,457 parameters; model 3,001,169. Causality still exactly 2 frames,
+so the decoder bought itself none.
+
+**A finding worth keeping.** In the spectrogram, a mask capped at 1.0 never
+increases any band — largest increase exactly **0.00**. But after converting
+back to audio and re-analysing, bands **can** exceed the original, by 5.21 in
+one test. A masked spectrogram is usually not the spectrogram of any real
+sound: neighbouring frames overlap, and once scaled differently they stop
+agreeing about the samples they share, so `istft` averages the disagreement.
+This is the same limitation as reusing the noisy timing information, and is
+exactly the ceiling DCCRN's complex-valued layers exist to lift.
+
+---
+
+## step 6 — Noise classifier head, on GPU    ✅
+
+**What it does.** Seven scores per clip, one per noise category, read off the
+shared memory. It never receives anything the deployed system would not have.
+Its job is to push the encoder and memory to tell noise types apart, which is
+groundwork for suppressing them.
+
+**16,903 parameters — 0.6% of the model.** Deliberately tiny, because it gets
+thrown away.
+
+**The deployment claim, verified rather than trusted:**
+
+```
+removing the aux head changes the audio by  0.00e+00
+```
+
+Bit-identical, so the trim is safe. Deployed model: 3,001,169 parameters.
+
+**On the RTX 5060:**
+
+```
+one 3 s clip     13.9 ms      (216x faster than real time)
+per 100 ms       0.46 ms of compute for 100 ms of audio
+batch of 16      1.62 GB of 8.0 GB, forward and backward
+```
+
+**Compute is not the constraint.** The machine is idle 99.5% of the time.
+
+```
+36 ms lookahead + 100 ms chunk wait + 0.5 ms compute = 136 ms
+```
+
+Against a 500–800 ms budget, and inside ITU's 150 ms comfortable-conversation
+range. The budget is dominated by *waiting*, not thinking.
+
+Two caveats: this is the 5060, **not** the Jetson AGX Orin the problem
+statement names, so it is a first data point rather than the answer. And an
+untrained model runs at the same speed as a trained one — this measures the
+architecture, which is what needed knowing before committing to long runs.
+
+The 1.62 GB also means there is room for a much larger batch, or the wider
+model, well inside 8 GB.
+
+---
+
+## What comes next
+
+1. **Training script** — the loop that teaches it. SI-SNR on the waveform for
+   the audio branch, cross-entropy for the classifier, combined with
+   `AUX_LOSS_WEIGHT`. Reads `SpeechNoiseMixtures('train')` from `mixing.py`.
 2. **Evaluation script** — PESQ, STOI and SI-SNR against the frozen 268
-   mixtures. Needs `pesq` and `pystoi`, which are **not installed yet**.
-3. **A short real run** to measure seconds-per-epoch on the 5060 before
-   committing to anything long.
+   mixtures, reported overall and per noise category. **Needs `pesq` and
+   `pystoi`, which are not installed yet.**
+3. **A short real run** to measure seconds-per-epoch before committing to
+   anything long.
+4. **Watch for overfitting.** 1292 training clips against 3 M parameters is a
+   thin ratio. When validation loss stops tracking training loss, that is the
+   trigger for the deferred voice-distortion augmentation
+   (`PROJECT_CONTEXT_4.md` Section 7) and for trying `LSTM_HIDDEN = 128`.
 
-Then the same sequence for the TCN, and a comparison between them. DCCRN
-remains the stretch upgrade, attempted only if a working system already
-exists.
+Then the same for the TCN, and a comparison. DCCRN remains the stretch
+upgrade, attempted only once a working system exists.
