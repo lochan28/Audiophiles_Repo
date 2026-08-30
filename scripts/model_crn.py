@@ -32,7 +32,7 @@ N_FFT = 512
 # You have both kinds of noise, so 512 is the middle. Try 320 first.
 # Sensible range: 256–1024. Must stay a power of 2.
 
-ENCODER_CHANNELS = (16, 32, 64, 128, 128)
+ENCODER_CHANNELS = (24, 48, 96, 192, 192)
 # How many different patterns each encoder layer looks for, and implicitly how
 # deep the encoder is (one layer per entry). Each layer also halves the pitch
 # axis, so 5 layers takes 257 bands down to 9.
@@ -60,7 +60,7 @@ LOOKAHEAD_FRAMES = 2
 # 0 = strictly causal, the model never sees the future at all.
 # Sensible range: 0-4. Hard cap is 2 per encoder layer, so 10 with 5 layers.
 
-LSTM_HIDDEN = 256
+LSTM_HIDDEN = 512
 # How much the memory can hold. Larger remembers more about what has been
 # heard, but is also where most of the parameters live and where overfitting
 # starts on a 1292-clip training set. TRY 128 FIRST if training loss keeps

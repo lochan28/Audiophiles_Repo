@@ -97,6 +97,23 @@
     border-radius: 6px; padding: 4px 8px; font: inherit; font-size: 12px;
   }
   .empty { color: var(--dim); padding: 30px 0; }
+
+  /* Phone: one column, the run list on top rather than a squeezed sidebar,
+     and charts full width so the axis labels stay readable. */
+  @media (max-width: 780px) {
+    .wrap { grid-template-columns: 1fr; }
+    aside { border-right: none; border-bottom: 1px solid var(--line);
+            max-height: 40vh; padding: 12px; }
+    main { padding: 14px 12px 50px; }
+    .charts, .cards, .samples { grid-template-columns: 1fr; }
+    header { padding: 11px 14px; gap: 10px; }
+    header h1 { font-size: 15px; }
+    #tick { display: none; }
+    .row span { width: 62px; }
+    table { font-size: 11.5px; }
+    th, td { padding: 4px 5px; }
+    pre.src { font-size: 10.5px; max-height: 260px; }
+  }
 </style>
 </head>
 <body>

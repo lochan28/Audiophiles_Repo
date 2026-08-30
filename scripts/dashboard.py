@@ -194,10 +194,19 @@ def main():
     os.makedirs(RUNS_DIR, exist_ok=True)
     n = len([d for d in os.listdir(RUNS_DIR)
              if os.path.isdir(os.path.join(RUNS_DIR, d))])
+    import socket
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80)); lan = s.getsockname()[0]; s.close()
+    except Exception:
+        lan = None
     url = f"http://localhost:{args.port}/"
     print(f"runs directory  {RUNS_DIR}")
     print(f"runs found      {n}")
     print(f"serving         {url}")
+    if lan:
+        print(f"on your phone   http://{lan}:{args.port}/   "
+              f"(same wifi; allow Python through the firewall if asked)")
     print("\nReads the run files on every request, so a training run in "
           "progress\nupdates as it goes. Ctrl+C to stop.")
     if not args.no_browser:
@@ -205,7 +214,7 @@ def main():
             webbrowser.open(url)
         except Exception:
             pass
-    HTTPServer(("127.0.0.1", args.port), Handler).serve_forever()
+    HTTPServer(("0.0.0.0", args.port), Handler).serve_forever()
 
 
 if __name__ == "__main__":
