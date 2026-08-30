@@ -175,10 +175,47 @@ def categories_in(split):
     return {d for d in os.listdir(root) if os.path.isdir(os.path.join(root, d))}
 
 
+CLASSES_FILE = os.path.join(DATASET_DIR, "noise_classes.txt")
+
+
+def sync_noise_classes(shared):
+    """Keep noise_classes.txt in step with what is on disk, append-only.
+
+    Line order in that file *is* the label order, so existing lines are never
+    reordered and never removed -- either would renumber the classes below
+    them and silently invalidate trained classifier heads and the label column
+    of the frozen evaluation manifest. New categories go on the end; a pinned
+    class that has lost its audio keeps its line and is simply never sampled.
+    """
+    pinned = []
+    if os.path.exists(CLASSES_FILE):
+        with open(CLASSES_FILE, encoding="utf-8") as f:
+            for line in f:
+                line = line.split("#", 1)[0].strip()
+                if line:
+                    pinned.append(line)
+
+    added = [c for c in sorted(shared) if c not in pinned]
+    missing = [c for c in pinned if c not in shared]
+
+    if added:
+        with open(CLASSES_FILE, "a", encoding="utf-8") as f:
+            for category in added:
+                print(category, file=f)
+        for offset, category in enumerate(added):
+            print(f"    pinned new class {category!r} as label {len(pinned) + offset}")
+    for category in missing:
+        print(f"    !! {category!r} is pinned but has no audio on disk - "
+              f"its line is kept so the labels below it do not shift")
+
+    return pinned + added
+
+
 def build_noise_manifest():
     per_split = {split: categories_in(split) for split in SPLITS}
     shared = set.intersection(*per_split.values())
     dropped = set.union(*per_split.values()) - shared
+    classes = sync_noise_classes(shared)
 
     rows = []
     for split in SPLITS:
@@ -203,7 +240,11 @@ def build_noise_manifest():
         writer.writeheader()
         writer.writerows(rows)
 
-    print(f"\nnoise: {len(shared)} categories usable -> {sorted(shared)}")
+    print()
+    print(f"noise: {len(shared)} categories usable")
+    for i, c in enumerate(classes):
+        mark = "" if c in shared else "   (no audio on disk)"
+        print(f"    label {i}  {c}{mark}")
     if dropped:
         for category in sorted(dropped):
             present = [s for s in SPLITS if category in per_split[s]]

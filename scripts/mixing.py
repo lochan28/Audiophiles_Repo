@@ -91,6 +91,28 @@ def read_speech_manifest(split):
     return keep, skipped
 
 
+def read_noise_classes():
+    """The canonical, ordered class list -- line order is label order.
+
+    Labels are pinned in dataset/noise_classes.txt rather than derived by
+    sorting the folder names, because sorting made label numbers depend on
+    class names: adding a class whose name sorts into the middle would
+    silently renumber every class after it, mismatching trained classifier
+    heads and the label column of the frozen evaluation manifest without
+    raising anything.
+    """
+    path = os.path.join(DATASET_DIR, "noise_classes.txt")
+    classes = []
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.split("#", 1)[0].strip()
+            if line:
+                classes.append(line)
+    if len(set(classes)) != len(classes):
+        raise ValueError(f"duplicate class in {path}: {classes}")
+    return classes
+
+
 def read_noise_manifest(split):
     """Returns {category: [paths]} for one split."""
     path = os.path.join(DATASET_DIR, "noise_manifest.csv")
@@ -161,8 +183,23 @@ class SpeechNoiseMixtures(Dataset):
 
         self.speech, self.skipped = read_speech_manifest(split)
         self.noise = read_noise_manifest(split)
-        self.categories = sorted(self.noise)
-        self.category_index = {c: i for i, c in enumerate(self.categories)}
+
+        # labels are global and pinned by file order, so a class means the
+        # same number in every split and stays put when new ones are added
+        self.classes = read_noise_classes()
+        self.category_index = {c: i for i, c in enumerate(self.classes)}
+        self.n_classes = len(self.classes)
+
+        unknown = sorted(set(self.noise) - set(self.classes))
+        if unknown:
+            raise RuntimeError(
+                f"noise categories on disk are missing from noise_classes.txt: "
+                f"{unknown}. Append them (never insert) and re-run "
+                f"build_balanced_manifests.py.")
+
+        # sampled in canonical order; a pinned class with no clips in this
+        # split simply never comes up, which is why deleting lines is unsafe
+        self.categories = [c for c in self.classes if c in self.noise]
         if not self.categories:
             raise RuntimeError(f"no noise found for split {split!r}")
 

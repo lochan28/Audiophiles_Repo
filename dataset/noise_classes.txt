@@ -1,0 +1,29 @@
+# Noise class order -- THIS FILE DEFINES THE LABEL NUMBERS.
+#
+# Line order is label order: the first class below is label 0, the second is
+# label 1, and so on. Nothing derives labels from alphabetical sorting any
+# more, because that made label numbers depend on class *names*: adding a
+# class called "drone" would have sorted between assault_rifle and engine and
+# silently renumbered everything after it, mismatching every trained
+# classifier head and the label column of the frozen evaluation manifest,
+# with no error raised anywhere.
+#
+# RULES
+#   - New classes are APPENDED to the end. Never insert into the middle.
+#   - Never reorder existing lines.
+#   - Never delete a line, even if that class is removed from disk -- deleting
+#     renumbers everything below it. Leave it; an absent class is simply never
+#     sampled.
+#
+# scripts/add_noise_class.py appends here automatically. Editing by hand is
+# fine as long as you only ever add to the bottom.
+#
+# Blank lines and lines starting with # are ignored.
+
+ambient
+assault_rifle
+engine
+heavy_artillery
+helicopter
+mortar
+rocket
