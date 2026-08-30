@@ -112,6 +112,41 @@ stored because the clean target is not the original file — it is padded,
 randomly placed, and co-rescaled. Verified: SNR requested vs measured
 agrees to 0.0000 dB across all 268, no split leaks, speakers disjoint.
 
+### Voice distortion augmentation — planned, deliberately deferred
+
+Decided on and scoped, but **not implemented, and not to be implemented
+until a clean baseline exists.** Do not add it unprompted.
+
+**Mode A** is the chosen form: distortion is applied to the speech
+*before* it becomes both target and input, so the network learns to
+denoise distorted speech rather than to undo the distortion. Mode B
+(distort the input only, keep a pristine target) was rejected — it turns
+enhancement into restoration, which is far harder on 1292 clips.
+
+Deferring is safe precisely because Mode A changes nothing structural:
+same shapes, same alignment, same `(noisy, clean, label)` interface, and
+the frozen evaluation set stays valid. It drops in later as one function
+called before `mix_at_snr`.
+
+**Trigger to implement:** validation loss stops tracking training loss.
+That is overfitting confirmed, which is what this fixes.
+
+**Two hard rules when it is built:**
+- **Nothing that changes time alignment** — no time-stretch, no `speed`,
+  no pitch shift by resample, no variable delay. SI-SNR and L1 compare
+  sample by sample; a desynchronized pair does not error, it silently
+  trains against a meaningless objective.
+- **Never augment 100% of examples.** ~40% is the intended rate.
+
+Cheap effects are all available in `torchaudio` already
+(`bandpass_biquad`, `mu_law_encoding`/`decoding`, numpy clipping, mask
+dropout) — about an hour of work. Reverb needs impulse responses:
+`fftconvolve` exists but `scipy` and `pyroomacoustics` do not. A real
+codec is not planned; `apply_codec` was removed from torchaudio.
+
+Record which runs used augmentation. Never compare an augmented run
+against a clean one and read the difference as an architecture result.
+
 ## Real-time processing
 
 The model does **not** see a whole 3-second clip at once. The original

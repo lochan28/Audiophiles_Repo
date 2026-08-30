@@ -415,17 +415,85 @@ placement for every mixture. Verified after writing: every file is exactly
 across all 268, no split leaks, and validation/testing speakers stay
 disjoint.
 
-### Beyond simple additive noise
+### Beyond simple additive noise — voice distortion (DEFERRED, planned)
 
-It was agreed that realistic distortion beyond just "clean speech plus
-noise" is worth including, since real transmitted audio can be degraded in
-more ways than that. This includes: clipping, reverberation (simulated by
-convolving with a room impulse response), band-limiting (cutting off
-frequency range, like a radio channel would), dropout or packet loss
-(missing chunks of audio), and codec/vocoder-style distortion that makes
-speech sound "robotic." This is a harder problem than plain noise removal —
-closer to audio restoration — and is planned as an extension on top of the
-core noise-cancellation task, not a replacement for it.
+Realistic distortion beyond just "clean speech plus noise" is worth
+including, since real transmitted audio is degraded in more ways than that:
+clipping, reverberation (convolving with a room impulse response),
+band-limiting (cutting off frequency range, as a radio channel would),
+dropout or packet loss (missing chunks of audio), and codec/vocoder-style
+distortion that makes speech sound "robotic." The problem statement names
+reverberation and clipping explicitly as expected augmentation, so this is a
+scored gap rather than only a nice-to-have. Random noise mixing, the third
+augmentation it names, is already covered by the mixer itself.
+
+**This is deliberately deferred to a later update.** The decision and the
+reasoning behind it:
+
+**Mode A is the chosen form.** The distortion is applied to the speech
+*before* it becomes both the target and the input:
+
+```
+speech -> distort -> [ target ]
+                  -> [ + noise -> input ]
+```
+
+The network then learns "remove noise from distorted speech" and keeps the
+distortion, rather than trying to undo it. This matches deployment — a radio
+operator's reference audio genuinely is band-limited and codec-mangled, and
+the system's job is to make that intelligible, not to reconstruct studio
+audio that never existed.
+
+The rejected alternative, **Mode B**, distorts only the input and leaves the
+target pristine, forcing the network to denoise *and* de-distort. That is
+restoration rather than enhancement, a strictly harder problem, and with
+only 1292 training clips it is a realistic way to end up below all three
+targets at once by half-learning two tasks instead of learning one well.
+
+**Why deferring is safe, and why it is actively better.** Mode A changes
+nothing structural: same shape, same sample rate, same sample-for-sample
+alignment between input and target, same `(noisy, clean, label)` interface.
+The model, the loss, the training loop and the frozen evaluation set are all
+untouched, so it drops in later as a single function called before
+`mix_at_snr`. Mode B would not have this property — it redefines the task,
+so adding it later would invalidate every result measured before it.
+
+Beyond being safe, deferring is the better experiment. Augmentation fixes
+overfitting, and whether this project has any overfitting is not yet known.
+Adding it before the first baseline exists means that if the first CRN trains
+badly, there is no way to tell whether the model is wrong or the augmentation
+made the task too hard. Train clean first, get a baseline worth trusting,
+then add augmentation and measure whether it helped.
+
+**The trigger for picking this up:** when validation loss stops tracking
+training loss — training keeps improving while validation flattens or turns
+upward. That is overfitting confirmed, and it is exactly what Mode A
+augmentation addresses. Given the dataset size this may well appear early,
+so it should not be assumed to stay deferred for long.
+
+**Two rules for when it is implemented.** Nothing that alters time alignment
+may be used — no time-stretching, no `speed`, no pitch shifting by resample,
+no variable delay. SI-SNR and L1 losses compare input and target sample by
+sample, so a desynchronized pair does not raise an error, it silently trains
+the network against a meaningless objective. And augmentation must never be
+applied to 100% of examples; roughly 40% is the intended rate, so the network
+still sees undistorted conditions to anchor against.
+
+**Effort, and what is already available.** `torchaudio` already provides
+everything for the cheap effects — `bandpass_biquad` for band-limiting,
+`mu_law_encoding`/`mu_law_decoding` for the "robotic" quantized flavour,
+plain `numpy` clipping, and simple masking for dropout. That tier is roughly
+an hour of work. Reverberation is the one moderate item: `fftconvolve`
+exists, but neither `scipy` nor `pyroomacoustics` is installed, so it needs
+either a synthetic exponential-decay impulse response or a downloaded RIR set
+such as OpenSLR's RIRS_NOISES. A real codec (AMR, Opus, GSM) is the hard case
+and is not planned — `torchaudio.functional.apply_codec` has been removed, so
+it would require driving ffmpeg as a subprocess, and mu-law approximates the
+audible character well enough.
+
+**When it lands, record which runs used it.** An augmented run must never be
+compared against a clean one and the difference read as an architecture
+result.
 
 ### Held-out generalization testing
 
@@ -827,6 +895,14 @@ An early draft named `collect_speech_data.py` is referenced in older notes;
 it is **not present in this project folder**.
 
 ## 15. Open questions / things still to confirm
+
+**Planned, deliberately deferred:**
+
+- **Voice distortion augmentation (Mode A)** — decided on, scoped, and held
+  back until a clean baseline exists (Section 7). The trigger for picking it
+  up is validation loss ceasing to track training loss. The problem statement
+  names reverberation and clipping as expected augmentation, so leaving this
+  undone permanently is a scored gap, not merely a missed improvement.
 
 **Data quality items:**
 
