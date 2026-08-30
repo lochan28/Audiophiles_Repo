@@ -1,0 +1,14 @@
+# The virtualenv is ~5 GB and fully rebuildable -- the exact install command,
+# including the CUDA index needed for the RTX 5060, is in PROJECT_CONTEXT_4.md
+# Section 6. Never commit it.
+.venv/
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+
+# Editor and OS noise
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini

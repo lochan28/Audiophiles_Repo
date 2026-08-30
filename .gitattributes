@@ -1,0 +1,9 @@
+# Store every file byte-for-byte with no line-ending translation.
+#
+# This matters here: the manifest CSVs are written by Python with CRLF line
+# endings, and the audio is binary. Letting git normalize line endings would
+# mean a checked-out manifest no longer matches what the scripts wrote, which
+# would quietly break reproducibility of the frozen evaluation mixtures.
+* -text
+
+*.wav binary
