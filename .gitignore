@@ -12,3 +12,8 @@ __pycache__/
 .idea/
 Thumbs.db
 desktop.ini
+
+# Generated figures -- reproducible in seconds from scripts/visualize_pipeline.py,
+# ~1 MB each, and one gets written per mixture per build step. Keeping them
+# would bloat the repo with output that carries no information the code does not.
+logs/figures/
