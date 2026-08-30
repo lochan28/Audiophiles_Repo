@@ -532,7 +532,14 @@ placement for every mixture. Verified after writing: every file is exactly
 across all 268, no split leaks, and validation/testing speakers stay
 disjoint.
 
-### Beyond simple additive noise — voice distortion (DEFERRED, planned)
+### Beyond simple additive noise — voice distortion (DEFERRED, and now a weaker bet)
+
+**Read Section 18 before acting on this.** The data-scaling experiment
+showed that quartering the real training data changes nothing, which
+undercuts the premise that more diversity is what the model lacks.
+Augmentation is still worth doing because the problem statement names it,
+but it should no longer be expected to lift the scores.
+
 
 Realistic distortion beyond just "clean speech plus noise" is worth
 including, since real transmitted audio is degraded in more ways than that:
@@ -813,6 +820,12 @@ for suppressing them.
 **Class imbalance to account for.** The seven classes are not evenly sized —
 `assault_rifle` has 137 clips against `mortar`'s 45 (full table in Section 17). The classification loss will need class weighting or balanced sampling,
 otherwise the branch can score well by favouring the common classes.
+
+**It works.** Across five training runs the branch reaches 0.52 to 0.59
+accuracy against a chance level of 0.143, about four times chance. The idea
+below is sound and the branch learns what it was meant to. Whether it
+*helps* the audio task is separate and still untested; the experiment is a
+run with `AUX_LOSS_WEIGHT = 0.0` (Section 18).
 
 **Removing it for deployment (verified).** In the built model this branch is
 16,903 parameters, 0.6% of the total, and stripping it changes the enhanced
@@ -1178,3 +1191,81 @@ Verified after writing: every file is exactly 48000 samples at 16 kHz,
 requested and measured SNR agree to 0.0000 dB across all 268, SNR spans
 −4.99 to +14.97 dB, no mixture crosses a split, category labels map cleanly
 to 0–6, and validation/testing speakers remain disjoint.
+
+## 18. Training runs, and what they showed
+
+Five runs, all scored on the frozen validation mixtures. The noisy baseline is
+PESQ 1.199, STOI 0.745, SI-SNR +4.5 dB, and is identical for every run.
+
+| run | what it tested | params | clips | PESQ | STOI | SI-SNR |
+| --- | --- | --- | --- | --- | --- | --- |
+| 0001 | baseline | 3.0 M | 1292 | 1.671 | 0.840 | 11.53 |
+| 0002 | 3x the capacity | 9.3 M | 1292 | 1.694 | 0.844 | 11.72 |
+| 0003 | a quarter of the data | 3.0 M | 323 | 1.673 | 0.841 | 11.64 |
+| 0004 | half the data | 3.0 M | 646 | 1.650 | 0.836 | 11.50 |
+| 0005 | all the data | 3.0 M | 1292 | 1.678 | 0.842 | 11.59 |
+
+### The finding: neither capacity nor data is the constraint
+
+**Tripling the parameters changed nothing** -- +0.02 PESQ for 50% more time
+per epoch, which is noise.
+
+**Quartering the data changed nothing either.** Runs 0003 to 0005 are the
+data-scaling experiment: identical in every respect except how many distinct
+speech clips were available. The step count was held fixed at 80 batches per
+epoch with sampling *with replacement*, so every run received exactly the same
+number of gradient updates and only the diversity of source recordings
+differed. Without that control a smaller dataset would also have meant less
+training, and a worse result would have said nothing about which caused it.
+The subset was taken as an evenly spaced slice rather than the first N,
+because the manifest is sorted by language and the head would have been
+Assamese and English only.
+
+The curve is **flat, not flattening**: 323 clips scores the same as 1292, and
+25% even beat 50%. Every configuration converges to SI-SNR around 11.6 dB,
+STOI around 0.84, PESQ around 1.67. That consistency across a 4x range of data
+and a 3x range of capacity is the result.
+
+**Two earlier recommendations in this document were wrong and are withdrawn.**
+Collecting more speech and noise would have been weeks of effort for nothing.
+And the deferred voice-distortion augmentation (Section 7) is now a much
+weaker bet: if four times less *real* diversity changes nothing, synthetic
+diversity is unlikely to change anything either. It is not cancelled, since
+the problem statement names it, but it should no longer be expected to lift
+the scores.
+
+### What the ceiling probably is
+
+Not resources. Two design choices in the model are the leading suspects, and
+both are cheap to test:
+
+1. **The model can only attenuate.** `MASK_MAX = 1.0` caps the mask at 1, so
+   it can turn sound down but never up. At -5 dB SNR speech bands sit
+   *underneath* the noise, and recovering them needs amplification. A one-line
+   change tests this.
+2. **The noisy phase is reused unchanged.** Only magnitude is masked. At low
+   SNR that phase is badly corrupted and no magnitude mask can repair it.
+   This is the known ceiling of magnitude-masking systems, and exactly what
+   DCCRN's complex-valued layers exist to lift.
+
+A third possibility is a loss/metric mismatch: SI-SNR optimises waveform
+match, while PESQ and STOI care about the spectral envelope.
+
+**This changes the case for DCCRN.** It was a stretch goal held back until a
+working system existed (Section 4). That condition is met, and the project's
+own measurements now argue for it, rather than it resting on the published
+results of others.
+
+### The auxiliary classifier works
+
+The noise-category branch reaches **0.52 to 0.59 accuracy against a chance
+level of 0.143**, roughly four times chance, in every run. The Section 11 idea
+is sound and the branch learns what it was meant to. Whether it *helps* the
+audio task is a separate question, still untested: the experiment is a run
+with `AUX_LOSS_WEIGHT = 0.0`.
+
+### Cost
+
+An epoch is 11.3 s at 3.0 M parameters and 16.9 s at 9.3 M. A full run to
+early stopping is 10 to 20 minutes. Runs are cheap enough that questions like
+these should be settled by experiment rather than by argument.

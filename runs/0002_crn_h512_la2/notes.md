@@ -1,0 +1,1 @@
+Capacity increase over run 0001. LSTM hidden 256->512 and encoder channels (16,32,64,128,128)->(24,48,96,192,192), taking the model from 3.0M to 9.3M parameters. Run 0001 plateaued and was stopped early at epoch 54 with all three targets unmet, so this tests whether the ceiling was capacity rather than data. Everything else unchanged.

@@ -89,6 +89,14 @@ EARLY_STOP_PATIENCE = 12
 SEED = 0
 # Fixed so two runs with the same settings are comparable.
 
+STEPS_PER_EPOCH = 80
+# Batches per epoch, held FIXED regardless of how much data is in use. This
+# exists for the data-scaling experiment: if an epoch were simply "one pass",
+# a quarter of the data would also mean a quarter of the gradient updates, and
+# a worse result would say nothing about whether diversity or training amount
+# caused it. Sampling with replacement to a fixed step count isolates the one
+# variable being tested. 80 matches a full pass at batch 16.
+
 SAMPLE_CLIPS = 4
 # How many fixed validation clips to save audio and mask pictures for at each
 # evaluation. Always the same clips, chosen to span easy and hard conditions,
@@ -298,6 +306,9 @@ def main():
     ap.add_argument("--note", default=None,
                     help="why you are running this; saved to notes.md")
     ap.add_argument("--resume", default=None, metavar="RUN_NAME")
+    ap.add_argument("--data-fraction", type=float, default=1.0,
+                    help="train on this fraction of the speech clips, with "
+                         "the step count held fixed")
     ap.add_argument("--limit-batches", type=int, default=None,
                     help="stop each epoch after N batches (smoke testing)")
     args = ap.parse_args()
@@ -307,11 +318,20 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     train_set = SpeechNoiseMixtures("train")            # fresh noise each epoch
+    if args.data_fraction < 1.0:
+        keep = max(1, int(len(train_set.speech) * args.data_fraction))
+        # take an evenly spaced slice, not the first N: the manifest is sorted
+        # by language, so the head would be Assamese and English only
+        step = len(train_set.speech) / keep
+        train_set.speech = [train_set.speech[int(i * step)] for i in range(keep)]
     val_set = FrozenMixtures("validation")              # fixed, comparable
     classes = read_noise_classes()
 
+    from torch.utils.data import RandomSampler
+    sampler = RandomSampler(train_set, replacement=True,
+                            num_samples=STEPS_PER_EPOCH * args.batch_size)
     train_loader = DataLoader(train_set, batch_size=args.batch_size,
-                              shuffle=True, num_workers=0, drop_last=True)
+                              sampler=sampler, num_workers=0, drop_last=True)
     val_loader = DataLoader(val_set, batch_size=args.batch_size, shuffle=False,
                             num_workers=0)
 
@@ -329,6 +349,7 @@ def main():
 
     config = {
         "arch": args.arch, "epochs": args.epochs, "batch_size": args.batch_size,
+        "data_fraction": args.data_fraction, "steps_per_epoch": STEPS_PER_EPOCH,
         "learning_rate": args.lr, "weight_decay": WEIGHT_DECAY,
         "optimizer": OPTIMIZER, "aux_loss_weight": args.aux_weight,
         "grad_clip": GRAD_CLIP, "eval_every": args.eval_every,
@@ -357,7 +378,9 @@ def main():
         best_val = ck.get("best_val", float("inf"))
         print(f"resumed {run.name} at epoch {start_epoch}")
     else:
-        run = RunLog.create(args.arch, config, notes=args.note)
+        run = RunLog.create(args.arch, config, notes=args.note,
+                            tag_keys=("lstm_hidden", "lookahead_frames",
+                                      "data_fraction"))
 
     infer_ms = measure_inference_ms(model, device)
     run.update_config(inference_ms_per_clip=infer_ms,

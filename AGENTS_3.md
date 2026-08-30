@@ -147,6 +147,39 @@ codec is not planned; `apply_codec` was removed from torchaudio.
 Record which runs used augmentation. Never compare an augmented run
 against a clean one and read the difference as an architecture result.
 
+## Results so far -- READ THIS BEFORE SUGGESTING FIXES
+
+Five runs, detail in `PROJECT_CONTEXT_4.md` Section 18.
+
+```
+baseline 3.0M           PESQ 1.671  STOI 0.840  SI-SNR 11.53
+3x capacity 9.3M        PESQ 1.694  STOI 0.844  SI-SNR 11.72
+quarter of the data     PESQ 1.673  STOI 0.841  SI-SNR 11.64
+all the data            PESQ 1.678  STOI 0.842  SI-SNR 11.59
+```
+
+Noisy baseline: PESQ 1.199, STOI 0.745, SI-SNR +4.5 dB.
+Targets: 2.5, 0.85, 15 dB. None met.
+
+**Tripling capacity changed nothing. Quartering the data changed nothing.**
+Both were measured, not guessed. Do NOT propose a bigger model or more data
+collection -- those are tested dead ends.
+
+The ceiling is in the design. In order of cost to test:
+
+1. `MASK_MAX = 1.0` lets the model only attenuate, never boost. At -5 dB SNR
+   speech sits under the noise and needs amplification.
+2. The noisy phase is reused; only magnitude is masked. Known ceiling of
+   magnitude-masking systems, and what DCCRN fixes.
+3. Possible loss/metric mismatch: SI-SNR judges waveform, PESQ/STOI judge
+   spectral envelope.
+
+The aux noise classifier reaches 0.52-0.59 against 0.143 chance, so it works.
+Whether it HELPS the audio is untested -- run with `AUX_LOSS_WEIGHT = 0.0`.
+
+An epoch is 11.3 s; a full run is 10-20 minutes. Settle questions with
+experiments, not argument.
+
 ## Real-time processing
 
 The model does **not** see a whole 3-second clip at once. The original

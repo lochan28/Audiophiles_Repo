@@ -1,0 +1,1 @@
+Data-scaling experiment, 0.5 of the speech clips. Steps per epoch held fixed at 80 regardless of dataset size, so every run gets identical gradient updates and only the DIVERSITY of source recordings differs. Model back to 3.0M since 9.3M matched it exactly. Question: is the plateau caused by too little data, or by something else?

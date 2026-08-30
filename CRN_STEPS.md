@@ -303,6 +303,34 @@ model, well inside 8 GB.
    trigger for the deferred voice-distortion augmentation
    (`PROJECT_CONTEXT_4.md` Section 7) and for trying `LSTM_HIDDEN = 128`.
 
+## Results so far -- the ceiling is not resources
+
+Five runs. Full detail in `PROJECT_CONTEXT_4.md` Section 18.
+
+```
+run    tested                 params  clips   PESQ   STOI  SI-SNR
+0001   baseline                3.0M   1292   1.671  0.840   11.53
+0002   3x capacity             9.3M   1292   1.694  0.844   11.72
+0003   quarter of the data     3.0M    323   1.673  0.841   11.64
+0004   half the data           3.0M    646   1.650  0.836   11.50
+0005   all the data            3.0M   1292   1.678  0.842   11.59
+```
+
+Tripling the parameters changed nothing. Quartering the data changed nothing.
+Everything lands at SI-SNR ~11.6, STOI ~0.84, PESQ ~1.67.
+
+**So do not collect more data and do not build a bigger model.** Both were
+tested and both are dead ends. The ceiling is in the design:
+
+1. `MASK_MAX = 1.0` means the model can only turn sound DOWN. At -5 dB SNR the
+   speech is buried underneath the noise and needs boosting. One line to test.
+2. The noisy phase is reused unchanged; only magnitude is masked. That is the
+   known ceiling of this kind of model, and what DCCRN exists to fix.
+3. Possibly a loss/metric mismatch: SI-SNR judges waveform match, PESQ and
+   STOI judge spectral envelope.
+
+Test in that order: 15 minutes, an hour, then DCCRN.
+
 ## Tuning ideas, from measurement rather than guesswork
 
 An epoch takes **11.3 seconds** (9.2 s GPU, 0.7 s data) and an evaluation
