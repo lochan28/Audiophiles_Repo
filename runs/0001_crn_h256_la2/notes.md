@@ -1,0 +1,1 @@
+First real baseline run. Defaults throughout: CRN 3.0M params, hidden 256, lookahead 2 frames, batch 16, AdamW lr 3e-4, aux weight 0.2. Epochs raised to 150 so early stopping (patience 12) decides when to halt rather than an arbitrary cap. Batch size deliberately left at 16 so this is a clean baseline against the measured 11.3 s/epoch; raising it is the next experiment.
