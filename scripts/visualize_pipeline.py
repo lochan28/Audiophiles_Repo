@@ -167,15 +167,90 @@ def draw(row):
     return out, error, noisy, clean, noise_in_mix
 
 
+def draw_zoom(row, t0, t1, fmax=4.0):
+    """Clean, noise and mixture spectrograms side by side over a short window.
+
+    The full three-second view squeezes too much in to see the shapes. Up
+    close the contrast is the whole argument for using spectrograms at all:
+    voice draws horizontal lines, an impact draws a vertical one.
+
+    All three panels share one brightness scale, taken from the mixture.
+    Auto-scaling each panel separately would make the quiet clean speech look
+    as loud as the mortar and destroy the comparison.
+    """
+    noisy = read(os.path.join(MIX_DIR, row["noisy_file"]))
+    clean = read(os.path.join(MIX_DIR, row["clean_file"]))
+    noise = noisy - clean
+
+    def spec_db(y):
+        s = to_spectrogram(torch.from_numpy(y).unsqueeze(0))
+        return 20.0 * np.log10(np.maximum(s.squeeze(0).abs().numpy().T, 1e-8))
+
+    dbs = [spec_db(x) for x in (clean, noise, noisy)]
+    top = dbs[2].max()                       # one shared scale, from the mixture
+    lo, hi = top - 70.0, top
+
+    n_freq, n_frames = dbs[0].shape
+    f0 = int(fmax * 1000 / (SAMPLE_RATE / 2) * n_freq)
+    a = int(t0 * SAMPLE_RATE / HOP_LENGTH)
+    b = int(t1 * SAMPLE_RATE / HOP_LENGTH)
+
+    titles = [
+        "CLEAN SPEECH alone — held notes draw HORIZONTAL lines",
+        f"THE {row['category'].upper()} alone — an impact hits every pitch at "
+        f"once, drawing a VERTICAL line",
+        "THE MIXTURE — both at once. This is all the model gets.",
+    ]
+
+    fig, axes = plt.subplots(3, 1, figsize=(12, 11), sharex=True)
+    fig.suptitle(
+        f"Zoomed to {t0:.2f}–{t1:.2f} s, up to {fmax:.0f} kHz  —  "
+        f"{row['split']} #{row['index']}, {row['category']}, "
+        f"SNR {float(row['snr_db']):+.2f} dB",
+        fontsize=13, y=0.985)
+
+    for ax, db, title in zip(axes, dbs, titles):
+        ax.imshow(db[:f0, a:b], origin="lower", aspect="auto", cmap="magma",
+                  vmin=lo, vmax=hi, extent=[t0, t1, 0, fmax])
+        ax.set_title(title, fontsize=11, loc="left")
+        ax.set_ylabel("kHz", fontsize=9)
+        ax.tick_params(labelsize=8)
+    axes[-1].set_xlabel("seconds", fontsize=10)
+
+    fig.tight_layout(rect=[0, 0, 1, 0.975])
+    os.makedirs(OUT_DIR, exist_ok=True)
+    out = os.path.join(OUT_DIR,
+                       f"zoom_{row['split']}_{int(row['index']):03d}_"
+                       f"{row['category']}.png")
+    fig.savefig(out, dpi=115)
+    plt.close(fig)
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--split", default=DEFAULT_SPLIT)
     ap.add_argument("--index", type=int, default=DEFAULT_INDEX)
     ap.add_argument("--category", default=None,
                     help="pick the lowest-SNR mixture of this noise category")
+    ap.add_argument("--zoom", nargs=2, type=float, metavar=("START", "END"),
+                    help="instead of the full pipeline, draw clean / noise / "
+                         "mixture spectrograms over this time window")
+    ap.add_argument("--fmax", type=float, default=4.0,
+                    help="top of the frequency axis in kHz for --zoom")
     args = ap.parse_args()
 
     row = pick(load_manifest(), args.split, args.index, args.category)
+
+    if args.zoom:
+        out = draw_zoom(row, args.zoom[0], args.zoom[1], args.fmax)
+        print(f"mixture     {row['split']} #{row['index']}  {row['category']}  "
+              f"SNR {float(row['snr_db']):+.2f} dB")
+        print(f"window      {args.zoom[0]:.2f}-{args.zoom[1]:.2f} s, "
+              f"0-{args.fmax:.0f} kHz")
+        print(f"\nwrote {os.path.relpath(out, PROJECT_ROOT)}")
+        return
+
     out, error, noisy, clean, noise = draw(row)
 
     print(f"mixture     {row['split']} #{row['index']}  {row['category']}  "
