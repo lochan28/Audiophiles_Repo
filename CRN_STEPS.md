@@ -14,7 +14,13 @@ just changed.
 [x] step 5   Decoder and mask               DONE
 [x] step 6   Noise classifier head, on GPU  DONE
 
-    THE MODEL IS COMPLETE.  Next: the training script.  <-- WE ARE HERE
+    THE MODEL IS COMPLETE.
+    Training, evaluation and the dashboard are built and running.
+    Ten runs done; the objective has just been fixed (run 0010).
+
+    Next: sweep the spectral loss weight, then test whether the
+    encoder's 257-to-9-band squeeze can even represent the mask
+    it needs.                                          <-- WE ARE HERE
 ```
 
 Everything is in `scripts/model_crn.py`, 3,018,072 parameters, running on the
@@ -238,8 +244,12 @@ back to audio and re-analysing, bands **can** exceed the original, by 5.21 in
 one test. A masked spectrogram is usually not the spectrogram of any real
 sound: neighbouring frames overlap, and once scaled differently they stop
 agreeing about the samples they share, so `istft` averages the disagreement.
-This is the same limitation as reusing the noisy timing information, and is
-exactly the ceiling DCCRN's complex-valued layers exist to lift.
+This is the same limitation as reusing the noisy timing information.
+
+**Later correction.** This paragraph used to end by calling that the ceiling
+DCCRN's complex-valued layers exist to lift. The effect is real, but it is not
+what caps this project's scores: an ideal mask keeping the same noisy phase
+reaches PESQ 3.31 against our 1.78. See "Results so far" below.
 
 ---
 
@@ -288,56 +298,99 @@ model, well inside 8 GB.
 
 ---
 
-## What comes next
+## What came next — all four done ✅
 
-1. **Training script** — the loop that teaches it. SI-SNR on the waveform for
-   the audio branch, cross-entropy for the classifier, combined with
-   `AUX_LOSS_WEIGHT`. Reads `SpeechNoiseMixtures('train')` from `mixing.py`.
-2. **Evaluation script** — PESQ, STOI and SI-SNR against the frozen 268
-   mixtures, reported overall and per noise category. **Needs `pesq` and
-   `pystoi`, which are not installed yet.**
-3. **A short real run** to measure seconds-per-epoch before committing to
-   anything long.
-4. **Watch for overfitting.** 1292 training clips against 3 M parameters is a
-   thin ratio. When validation loss stops tracking training loss, that is the
-   trigger for the deferred voice-distortion augmentation
-   (`PROJECT_CONTEXT_4.md` Section 7) and for trying `LSTM_HIDDEN = 128`.
+1. **Training script** ✅ `train.py`. The audio loss is SI-SNR plus a
+   compressed-magnitude spectral term, and cross-entropy for the classifier,
+   combined with `SPECTRAL_LOSS_WEIGHT` and `AUX_LOSS_WEIGHT`. Reads
+   `SpeechNoiseMixtures('train')` from `mixing.py`.
+2. **Evaluation script** ✅ `evaluate.py`, with `pesq` and `pystoi` installed.
+   Reports every metric three ways — noisy, enhanced, and the gain between
+   them — overall and per noise category.
+3. **Timing** ✅ 11.3 s per epoch; an 80-epoch run is about 25 minutes.
+4. **Overfitting** ✅ watched, and it never became the problem. Quartering the
+   data changed nothing, so the thin data-to-parameter ratio was not what held
+   the scores down. The deferred voice-distortion augmentation is
+   correspondingly a weaker bet than it looked.
 
-## Results so far -- the ceiling is not resources
+## Results so far -- the ceiling was the objective, not the architecture
 
-Five runs. Full detail in `PROJECT_CONTEXT_4.md` Section 18.
+Ten runs. Full detail in `PROJECT_CONTEXT_4.md` Section 18. Scores are the mean
+of every evaluation from epoch 45 on, with its standard deviation -- **not** a
+run's best score, which grows with the number of evaluations and once misled
+this project badly.
 
 ```
-run    tested                 params  clips   PESQ   STOI  SI-SNR
-0001   baseline                3.0M   1292   1.671  0.840   11.53
-0002   3x capacity             9.3M   1292   1.694  0.844   11.72
-0003   quarter of the data     3.0M    323   1.673  0.841   11.64
-0004   half the data           3.0M    646   1.650  0.836   11.50
-0005   all the data            3.0M   1292   1.678  0.842   11.59
+run    tested                    PESQ           STOI   SI-SNR
+0002   3x capacity, 9.3M         1.674 +-0.012  0.842   11.69
+0003   quarter of the data       1.652 +-0.017  0.838   11.64
+0005   all the data              1.670 +-0.020  0.839   11.54
+0007   mask 2.0, aux off         1.691 +-0.017  0.842   11.67
+0008   aux classifier off        1.671 +-0.024  0.839   11.59
+0009   baseline, 110 epochs      1.682 +-0.011  0.840   11.57
+0010   compressed-mag loss       1.784 +-0.006  0.845   11.59
 ```
 
-Tripling the parameters changed nothing. Quartering the data changed nothing.
-Everything lands at SI-SNR ~11.6, STOI ~0.84, PESQ ~1.67.
+Runs 0001-0009 span 0.039 PESQ against a within-run wobble of 0.011-0.024, so
+**nothing tried in that whole series -- capacity, data, mask ceiling, auxiliary
+weight -- beat its own noise.**
 
-**So do not collect more data and do not build a bigger model.** Both were
-tested and both are dead ends. The ceiling is in the design:
+### What the cheating test showed
 
-1. `MASK_MAX = 1.0` means the model can only turn sound DOWN. At -5 dB SNR the
-   speech is buried underneath the noise and needs boosting. One line to test.
-2. The noisy phase is reused unchanged; only magnitude is masked. That is the
-   known ceiling of this kind of model, and what DCCRN exists to fix.
-3. Possibly a loss/metric mismatch: SI-SNR judges waveform match, PESQ and
-   STOI judge spectral envelope.
+`scripts/oracle_ceiling.py` builds the best possible mask out of the clean
+speech the model never sees, and scores it. That is a hard ceiling. It needs no
+training and took twenty minutes to settle a question argued about for weeks:
 
-Test in that order: 15 minutes, an hour, then DCCRN.
+```
+noisy input                          PESQ 1.189
+ideal mask, capped 1.0, NOISY phase  PESQ 3.314   <- the real ceiling
+ideal mask uncapped, noisy phase     PESQ 3.397
+noisy magnitude + clean phase        PESQ 1.289
+clean magnitude + clean phase        PESQ 4.644   <- sanity check, passes
+```
+
+**Reusing the noisy phase is not the ceiling, and DCCRN is not the next move.**
+The ideal mask keeps that same noisy phase and still clears the 2.5 target.
+Raising `MASK_MAX` is worth +0.08 even on a *perfect* mask, which is why runs
+0006 and 0007 measured nothing.
+
+The gap was between what we trained and what we measured: run 0009 captured
+**73% of the achievable SI-SNR but only 23% of the achievable PESQ**, because
+SI-SNR was the loss. SI-SNR grades waveform overlap, largely dictated by the
+phase we copy and never change; PESQ and STOI grade the spectral envelope,
+which is what the mask actually controls.
+
+### Run 0010: the fix
+
+A compressed-magnitude term was added to the loss -- spectrograms compared bin
+by bin after raising both to the power 0.3, so quiet consonants count instead
+of being drowned by loud vowels. Against run 0009 as its control:
+
+```
+PESQ     1.6819 +-0.0109  ->  1.7843 +-0.0062     +0.102
+STOI     0.8398 +-0.0022  ->  0.8449 +-0.0004     +0.005
+SI-SNR   11.572 +-0.096   ->  11.588 +-0.025       unchanged
+```
+
+9.4x the control's standard deviation, ranges not overlapping, and no SI-SNR
+surrendered to get it. First real effect in ten runs.
+
+Next, cheapest first: sweep the spectral weight (50 and 600 around 200), sweep
+`SPECTRAL_COMPRESSION` (0.15 and 0.5 around 0.3), then push the ideal mask
+through the encoder's 257-to-9-band squeeze and score it, to find out whether
+the architecture can even represent the detail it needs.
 
 ## Tuning ideas, from measurement rather than guesswork
 
 An epoch takes **11.3 seconds** (9.2 s GPU, 0.7 s data) and an evaluation
 about 12 more. 40 epochs is under 9 minutes; 150 is about half an hour.
 
-- **Set `EPOCHS` to 150, not 40.** Early stopping at 12 epochs of patience
-  will halt it when it plateaus, so there is no need to guess the number.
+- **Set `EPOCHS` to a fixed budget of 80 and leave early stopping off.** This
+  advice originally said to rely on early stopping at 12 epochs of patience.
+  That was withdrawn: it watched validation *loss* while results are judged on
+  PESQ, and the two diverge, so runs stopped at different points and training
+  length became a hidden variable in comparisons meant to isolate one thing.
+  Models converge by roughly epoch 45; 80 leaves a comfortable margin.
 - **Run many experiments.** A dozen configurations is an afternoon. This is
   why the comparison dashboard earns its place.
 - **Raise `BATCH_SIZE` to 32 or 48.** Only 1.62 GB of 8 GB is in use and the
@@ -346,5 +399,6 @@ about 12 more. 40 epochs is under 9 minutes; 150 is about half an hour.
   Worth recording because the first assumption was the opposite — mixing
   audio on the fly sounds expensive and is not.
 
-Then the same for the TCN, and a comparison. DCCRN remains the stretch
-upgrade, attempted only once a working system exists.
+Then the same for the TCN, and a comparison. DCCRN remains a stretch upgrade
+attempted only once a working system exists -- and note that after the oracle
+measurement above, nothing in this project's own results argues for it.

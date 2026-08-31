@@ -170,7 +170,9 @@ cannot be avoided; LSTM influence fades after roughly 280 ms at random
 initialisation rather than persisting indefinitely; and a masked spectrogram
 can gain energy after `istft` and re-analysis, because a masked spectrogram is
 generally not the spectrogram of any real signal — the same limitation as
-reusing the noisy phase, and exactly what DCCRN exists to lift.
+reusing the noisy phase. That limitation is real, but the claim once made here
+that it is what *caps this project's scores* was wrong, and Section 18 now
+disproves it by measurement.
 
 ### The architecture plan: CRN and TCN first, DCCRN as the upgrade
 
@@ -821,11 +823,13 @@ for suppressing them.
 `assault_rifle` has 137 clips against `mortar`'s 45 (full table in Section 17). The classification loss will need class weighting or balanced sampling,
 otherwise the branch can score well by favouring the common classes.
 
-**It works.** Across five training runs the branch reaches 0.52 to 0.59
-accuracy against a chance level of 0.143, about four times chance. The idea
-below is sound and the branch learns what it was meant to. Whether it
-*helps* the audio task is separate and still untested; the experiment is a
-run with `AUX_LOSS_WEIGHT = 0.0` (Section 18).
+**It learns, but it does not help.** Across every training run the branch
+reaches 0.52 to 0.59 accuracy against a chance level of 0.143, about four times
+chance, so the idea below is sound and the branch does what it was meant to.
+Whether it *helps* the audio task has since been tested and the answer is no:
+run 0008 switched it off and scored PESQ 1.671 ± 0.024 against run 0005's
+1.670 ± 0.020, which is the same number (Section 18). It is not earning its
+20% share of the gradient, and it is not costing anything measurable either.
 
 **Removing it for deployment (verified).** In the built model this branch is
 16,903 parameters, 0.6% of the total, and stripping it changes the enhanced
@@ -1194,20 +1198,50 @@ to 0–6, and validation/testing speakers remain disjoint.
 
 ## 18. Training runs, and what they showed
 
-Five runs, all scored on the frozen validation mixtures. The noisy baseline is
-PESQ 1.199, STOI 0.745, SI-SNR +4.5 dB, and is identical for every run.
+Ten runs, every one scored on the same frozen validation mixtures. The noisy
+baseline is PESQ 1.199, STOI 0.745, SI-SNR +4.5 dB and is identical for all of
+them. The targets are PESQ 2.5, STOI 0.85, SI-SNR 15 dB.
 
-| run | what it tested | params | clips | PESQ | STOI | SI-SNR |
-| --- | --- | --- | --- | --- | --- | --- |
-| 0001 | baseline | 3.0 M | 1292 | 1.671 | 0.840 | 11.53 |
-| 0002 | 3x the capacity | 9.3 M | 1292 | 1.694 | 0.844 | 11.72 |
-| 0003 | a quarter of the data | 3.0 M | 323 | 1.673 | 0.841 | 11.64 |
-| 0004 | half the data | 3.0 M | 646 | 1.650 | 0.836 | 11.50 |
-| 0005 | all the data | 3.0 M | 1292 | 1.678 | 0.842 | 11.59 |
+### How runs are compared, and a correction to earlier versions of this section
 
-### The finding: neither capacity nor data is the constraint
+Earlier versions of this section quoted each run's **best** PESQ. That was a
+mistake, and it produced a conclusion that was wrong. A converged model's PESQ
+wobbles by roughly +-0.02 between evaluations, so the best of N draws creeps
+upward with N: a run that simply got evaluated more times scores higher without
+being better. Run 0009 shows it plainly -- it converged by epoch 45 and then
+oscillated between 1.652 and 1.696 for another 70 epochs with no trend at all.
 
-**Tripling the parameters changed nothing** -- +0.02 PESQ for 50% more time
+Runs are therefore compared on the **mean of every evaluation from epoch 45
+onward, together with its standard deviation**, and a difference counts as real
+only if it clears the within-run noise. `EARLY_STOP_PATIENCE` is set to 0 for
+the same reason: it watched validation *loss* while results are judged on PESQ,
+and the two diverge, so it stopped runs at different points and quietly made
+training length a variable in comparisons meant to isolate something else.
+
+| run | what it tested | PESQ | STOI | SI-SNR |
+| --- | --- | --- | --- | --- |
+| 0001 | baseline, 3.0 M | 1.661 ± 0.010 | 0.839 | 11.45 |
+| 0002 | 3x the capacity, 9.3 M | 1.674 ± 0.012 | 0.842 | 11.69 |
+| 0003 | a quarter of the data | 1.652 ± 0.017 | 0.838 | 11.64 |
+| 0004 | half the data | 1.650 | 0.836 | 11.50 |
+| 0005 | all the data | 1.670 ± 0.020 | 0.839 | 11.54 |
+| 0006 | mask ceiling 2.0 | 1.636 ± 0.002 | 0.832 | 11.36 |
+| 0007 | mask ceiling 2.0, aux off | 1.691 ± 0.017 | 0.842 | 11.67 |
+| 0008 | aux classifier off | 1.671 ± 0.024 | 0.839 | 11.59 |
+| 0009 | baseline again, 110 epochs | 1.682 ± 0.011 | 0.840 | 11.57 |
+| **0010** | **compressed-magnitude loss** | **1.784 ± 0.006** | **0.845** | **11.59** |
+
+Runs 0004 and 0006 stopped before epoch 45 and so have no converged window;
+their rows are the last three evaluations and are shown for completeness only.
+
+### Runs 0001-0009: nothing that was tried made a difference
+
+Capacity, data volume, the mask ceiling and the auxiliary loss weight were each
+varied with everything else held fixed. **The best and the worst of those nine
+runs differ by 0.039 PESQ, against a within-run wobble of 0.011 to 0.024.** Not
+one comparison in the series survives its own noise.
+
+**Tripling the parameters changed nothing** -- +0.004 PESQ for 50% more time
 per epoch, which is noise.
 
 **Quartering the data changed nothing either.** Runs 0003 to 0005 are the
@@ -1234,38 +1268,125 @@ diversity is unlikely to change anything either. It is not cancelled, since
 the problem statement names it, but it should no longer be expected to lift
 the scores.
 
-### What the ceiling probably is
+### What the ceiling actually is, measured rather than argued
 
-Not resources. Two design choices in the model are the leading suspects, and
-both are cheap to test:
+Two suspects were named here for a long time: the mask could only attenuate,
+and the noisy phase was reused unchanged. The second was said to be the known
+ceiling of magnitude-masking systems and the reason to move to DCCRN. **Both
+claims have now been tested and both were wrong.**
 
-1. **The model can only attenuate.** `MASK_MAX = 1.0` caps the mask at 1, so
-   it can turn sound down but never up. At -5 dB SNR speech bands sit
-   *underneath* the noise, and recovering them needs amplification. A one-line
-   change tests this.
-2. **The noisy phase is reused unchanged.** Only magnitude is masked. At low
-   SNR that phase is badly corrupted and no magnitude mask can repair it.
-   This is the known ceiling of magnitude-masking systems, and exactly what
-   DCCRN's complex-valued layers exist to lift.
+`scripts/oracle_ceiling.py` settles the question without training anything. It
+cheats: it uses the clean speech, which the model never sees, to build the best
+possible mask, then scores the result. That is a hard ceiling -- a real model
+can approach it but can never beat it. On all 143 frozen validation mixtures:
 
-A third possibility is a loss/metric mismatch: SI-SNR optimises waveform
-match, while PESQ and STOI care about the spectral envelope.
+| condition | PESQ | STOI | SI-SNR |
+| --- | --- | --- | --- |
+| noisy input | 1.189 | 0.745 | 4.46 |
+| **ideal mask, capped at 1.0, noisy phase kept** | **3.314** | **0.966** | **14.29** |
+| ideal mask, uncapped, noisy phase kept | 3.397 | 0.973 | 15.02 |
+| noisy magnitude + clean phase | 1.289 | 0.807 | 8.59 |
+| clean magnitude + clean phase (sanity check) | 4.644 | 1.000 | 106.10 |
 
-**This changes the case for DCCRN.** It was a stretch goal held back until a
-working system existed (Section 4). That condition is met, and the project's
-own measurements now argue for it, rather than it resting on the published
-results of others.
+Three conclusions follow directly.
 
-### The auxiliary classifier works
+**Phase is not the constraint, so DCCRN is not the next move.** The ideal mask
+keeps the *noisy* phase and still reaches 3.314, comfortably past the 2.5
+target. Fixing only the phase and nothing else buys +0.10 PESQ. The
+architecture has roughly 1.6 PESQ of headroom it is not using.
+
+**The mask ceiling was correctly a dead end.** Allowing the mask to boost is
+worth +0.08 even when the mask is *perfect*, which is why runs 0006 and 0007
+measured nothing.
+
+**The real problem is that we were training one thing and grading another.**
+Comparing what each metric could gain against what the model actually gained:
+
+| metric | achievable | run 0009 got | captured |
+| --- | --- | --- | --- |
+| SI-SNR | +9.83 dB | +7.14 dB | 73% |
+| STOI | +0.221 | +0.097 | 44% |
+| PESQ | +2.125 | +0.491 | **23%** |
+
+The loss was SI-SNR, and on SI-SNR the model reached 73% of what a perfect mask
+achieves. On PESQ, the metric it is judged by, 23%. SI-SNR rewards waveform
+overlap, which the noisy phase largely dictates anyway; PESQ and STOI reward the
+spectral envelope, which is exactly what the mask controls and what the loss
+never asked about.
+
+### Run 0010: fixing the objective, and the first real gain
+
+`train.py` now adds a **compressed-magnitude term** to the loss. Both signals
+are turned into spectrograms and compared bin by bin after raising the
+magnitudes to the power 0.3. The compression is the point: raw magnitudes span
+orders of magnitude, so a squared error on them is decided almost entirely by
+loud vowels, while the fricatives and stops that carry intelligibility
+contribute nothing. Power 0.3 pulls the range together so quiet bins count,
+roughly as the ear does. Phase is deliberately not graded, since the model does
+not predict it.
+
+Run 0010 against run 0009 as its control, identical in every other respect:
+
+```
+PESQ     1.6819 +- 0.0109  ->  1.7843 +- 0.0062      +0.102
+STOI     0.8398 +- 0.0022  ->  0.8449 +- 0.0004      +0.005
+SI-SNR   11.572 +- 0.096   ->  11.588 +- 0.025        none
+```
+
+The PESQ gain is **9.4 times the control's own standard deviation** and the two
+runs' ranges do not overlap: 0009 never exceeded 1.696, 0010 never fell below
+1.778. After nine runs in which nothing cleared the noise, this is the first
+effect that unambiguously does.
+
+Two details worth keeping. **No SI-SNR was traded away** -- the new grader
+picked up detail the old one was blind to rather than competing with it. And
+the run became *steadier*, PESQ noise halving and STOI noise dropping fivefold,
+which fits: SI-SNR is scale-invariant so nothing pinned the output level, while
+the spectral term is scale-sensitive and anchors it.
+
+**How the weight of 200 was chosen.** The two terms are not comparable by
+value -- SI-SNR reads about -11 and the spectral term about 0.02, and their
+ratio swings from 8 at random initialisation to 451 once trained, so no fixed
+weight balances them. What matters is how hard each term pulls on the weights,
+so `train.py --loss-scales` backpropagates each term alone and reports the norm
+of the update it produces. Equal pull is a weight of 381 at initialisation and
+187 on trained weights; 200 sits in that range.
+
+### The auxiliary classifier learns, but does not help
 
 The noise-category branch reaches **0.52 to 0.59 accuracy against a chance
 level of 0.143**, roughly four times chance, in every run. The Section 11 idea
-is sound and the branch learns what it was meant to. Whether it *helps* the
-audio task is a separate question, still untested: the experiment is a run
-with `AUX_LOSS_WEIGHT = 0.0`.
+is sound in the sense that the branch learns what it was meant to.
+
+Whether it *helps* the audio task has now been tested, and the answer is no.
+Run 0008 switched it off and scored 1.671 ± 0.024 against run 0005's
+1.670 ± 0.020 -- identical. It is not earning its 20% share of the gradient,
+though it is also not costing anything measurable.
 
 ### Cost
 
-An epoch is 11.3 s at 3.0 M parameters and 16.9 s at 9.3 M. A full run to
-early stopping is 10 to 20 minutes. Runs are cheap enough that questions like
-these should be settled by experiment rather than by argument.
+An epoch is 11.3 s at 3.0 M parameters and 16.9 s at 9.3 M; the spectral loss
+adds one STFT pair per batch and no measurable time. A fixed 80-epoch run with
+evaluation every 5 epochs takes about 25 minutes. Runs are cheap enough that
+questions like these should be settled by experiment rather than by argument --
+which is exactly how the phase hypothesis, believed here for weeks, was
+finally disposed of in twenty minutes and no training at all.
+
+## 19. What to try next
+
+In order, cheapest first. The oracle ceiling of PESQ 3.31 is the yardstick:
+run 0010 captures 28% of the achievable gain, so there is a great deal left.
+
+1. **Sweep the spectral loss weight.** 200 makes the two graders pull equally,
+   but the whole gain arrived with no SI-SNR given up, which hints the spectral
+   term may deserve to lead. Bracket it: 50 and 600. One command each,
+   25 minutes each.
+2. **Sweep `SPECTRAL_COMPRESSION`.** 0.3 is convention, not measurement. Try
+   0.15 and 0.5.
+3. **Check whether the mask has enough resolution.** The encoder squeezes 257
+   frequency bands down to 9 before the LSTM. Pass the *ideal* mask through the
+   same downsample-and-upsample path and score it: whatever that loses is
+   detail the architecture cannot represent no matter how well it is trained.
+   This is the next oracle-style experiment and needs no training either.
+4. **Only then consider architecture changes**, and note that DCCRN is no
+   longer indicated by anything measured here.

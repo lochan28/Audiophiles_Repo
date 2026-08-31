@@ -149,36 +149,79 @@ against a clean one and read the difference as an architecture result.
 
 ## Results so far -- READ THIS BEFORE SUGGESTING FIXES
 
-Five runs, detail in `PROJECT_CONTEXT_4.md` Section 18.
+Ten runs, detail in `PROJECT_CONTEXT_4.md` Section 18. Compare runs on the
+**mean of evaluations from epoch 45 on, with its standard deviation** -- never
+on a run's best score. PESQ wobbles +-0.02 when converged, so best-of-N grows
+with N and a longer run wins without being better. That error was made here and
+produced a wrong conclusion.
 
 ```
-baseline 3.0M           PESQ 1.671  STOI 0.840  SI-SNR 11.53
-3x capacity 9.3M        PESQ 1.694  STOI 0.844  SI-SNR 11.72
-quarter of the data     PESQ 1.673  STOI 0.841  SI-SNR 11.64
-all the data            PESQ 1.678  STOI 0.842  SI-SNR 11.59
+0002  3x capacity 9.3M        PESQ 1.674 +- 0.012   STOI 0.842   SI-SNR 11.69
+0003  quarter of the data     PESQ 1.652 +- 0.017   STOI 0.838   SI-SNR 11.64
+0005  all the data            PESQ 1.670 +- 0.020   STOI 0.839   SI-SNR 11.54
+0007  mask 2.0, aux off       PESQ 1.691 +- 0.017   STOI 0.842   SI-SNR 11.67
+0008  aux off                 PESQ 1.671 +- 0.024   STOI 0.839   SI-SNR 11.59
+0009  baseline, 110 epochs    PESQ 1.682 +- 0.011   STOI 0.840   SI-SNR 11.57
+0010  compressed-mag loss     PESQ 1.784 +- 0.006   STOI 0.845   SI-SNR 11.59
 ```
 
 Noisy baseline: PESQ 1.199, STOI 0.745, SI-SNR +4.5 dB.
-Targets: 2.5, 0.85, 15 dB. None met.
+Targets: 2.5, 0.85, 15 dB. None met yet.
 
-**Tripling capacity changed nothing. Quartering the data changed nothing.**
-Both were measured, not guessed. Do NOT propose a bigger model or more data
-collection -- those are tested dead ends.
+**Runs 0001-0009 span 0.039 PESQ against a within-run noise of 0.011-0.024.**
+Nothing tried in that series -- capacity, data volume, mask ceiling, auxiliary
+weight -- produced an effect distinguishable from noise. Do NOT propose a
+bigger model or more data collection; both are tested dead ends.
 
-The ceiling is in the design. In order of cost to test:
+### The ceiling is known, because it was measured
 
-1. `MASK_MAX = 1.0` lets the model only attenuate, never boost. At -5 dB SNR
-   speech sits under the noise and needs amplification.
-2. The noisy phase is reused; only magnitude is masked. Known ceiling of
-   magnitude-masking systems, and what DCCRN fixes.
-3. Possible loss/metric mismatch: SI-SNR judges waveform, PESQ/STOI judge
-   spectral envelope.
+`scripts/oracle_ceiling.py` builds the best possible mask from the clean speech
+and scores it. No training involved. On the frozen validation set:
 
-The aux noise classifier reaches 0.52-0.59 against 0.143 chance, so it works.
-Whether it HELPS the audio is untested -- run with `AUX_LOSS_WEIGHT = 0.0`.
+```
+noisy input                            PESQ 1.189  STOI 0.745  SI-SNR  4.46
+ideal mask, capped 1.0, NOISY phase    PESQ 3.314  STOI 0.966  SI-SNR 14.29
+ideal mask, uncapped, noisy phase      PESQ 3.397  STOI 0.973  SI-SNR 15.02
+noisy magnitude + clean phase          PESQ 1.289  STOI 0.807  SI-SNR  8.59
+clean magnitude + clean phase          PESQ 4.644  STOI 1.000  (sanity check)
+```
 
-An epoch is 11.3 s; a full run is 10-20 minutes. Settle questions with
-experiments, not argument.
+**Do NOT propose DCCRN, complex masks, or any phase-related fix.** Keeping the
+noisy phase, the ideal mask still reaches 3.31, well past the 2.5 target.
+Fixing phase alone is worth +0.10. This document previously claimed noisy-phase
+reuse was the ceiling; that claim was wrong and is withdrawn.
+
+**Do NOT propose raising `MASK_MAX`.** Uncapping the *perfect* mask is worth
++0.08. Runs 0006 and 0007 were measuring nothing.
+
+The actual problem was a loss/metric mismatch. Run 0009 captured 73% of the
+achievable SI-SNR but only 23% of the achievable PESQ, because SI-SNR was the
+loss. Run 0010 added a compressed-magnitude spectral term (power 0.3) and
+gained +0.102 PESQ over 0009 -- 9.4x the control's own standard deviation,
+with non-overlapping ranges and no SI-SNR given up. First real effect in ten
+runs.
+
+Weight it by MEASUREMENT, not by loss values: their ratio swings from 8 to 451
+across a run. `python scripts/train.py --loss-scales` backpropagates each term
+alone and reports the gradient each produces. Equal pull is 381 at init, 187
+trained; the default 200 sits in that range.
+
+The aux noise classifier reaches 0.52-0.59 against 0.143 chance, so it learns.
+It does not HELP: run 0008 with it off scored 1.671 +- 0.024 against run 0005's
+1.670 +- 0.020. Identical.
+
+### Next, cheapest first
+
+1. Sweep the spectral weight: 50 and 600 around the current 200.
+2. Sweep `SPECTRAL_COMPRESSION`: 0.15 and 0.5 around 0.3.
+3. Push the *ideal* mask through the encoder's downsample-and-upsample path
+   and score it. The encoder squeezes 257 bands to 9; whatever that loses is
+   detail no amount of training can recover. No training needed.
+
+An epoch is 11.3 s; an 80-epoch run is about 25 minutes. `EARLY_STOP_PATIENCE`
+is 0 on purpose -- it watched validation loss while results are judged on PESQ,
+making training length a hidden variable. Settle questions with experiments,
+not argument.
 
 ## Real-time processing
 
@@ -255,18 +298,22 @@ stripping the aux head changes the audio by exactly 0.00. On the 5060:
 
 ### The staged plan
 
-No model has been trained yet. **DCCRN is not the final choice** — the
-plan is staged:
+The CRN has been trained ten times; see "Results so far" above.
+**DCCRN is not the final choice** — the plan is staged:
 
-1. **CRN and TCN first.** The CRN is built; the TCN is not. These two
-   get trained and compared before anything else.
+1. **CRN and TCN first.** The CRN is built and trained; the TCN is not.
+   These two get compared before anything else.
 2. **If that works out well, DCCRN is the next step** — an upgrade on top
    of a working system, not the starting point.
 3. **What ships is DCCRN if it is achieved; otherwise whichever of CRN
    and TCN performs better.**
 
 Everything below about DCCRN describes that upgrade step, not the
-architecture currently being worked in.
+architecture currently being worked in. **Note that the project's own
+measurements no longer argue for it**: the oracle test above shows that
+keeping the noisy phase costs far less than was assumed, so DCCRN's main
+advantage addresses a problem this system does not have. It stays a
+stretch goal on the strength of others' published results, nothing more.
 
 **What the published DCCRN results show.** The original research model
 was small — about **3.7 M parameters** — and ranked first in the
