@@ -1,0 +1,78 @@
+{
+  "arch": "crn",
+  "aux_loss_weight": 0.2,
+  "batch_size": 16,
+  "changed_from": "0009_crn_mask_max1_aux02",
+  "changes": {
+    "epochs": {
+      "from": 120,
+      "to": 80
+    },
+    "inference_ms_per_clip": {
+      "from": 14.464570000018284,
+      "to": null
+    },
+    "spectral_compression": {
+      "from": null,
+      "to": 0.3
+    },
+    "spectral_loss_weight": {
+      "from": null,
+      "to": 200.0
+    },
+    "total_latency_ms": {
+      "from": 136.48215233333394,
+      "to": null
+    }
+  },
+  "chunk_ms": 100.0,
+  "classes": [
+    "ambient",
+    "assault_rifle",
+    "engine",
+    "heavy_artillery",
+    "helicopter",
+    "mortar",
+    "rocket"
+  ],
+  "data_fraction": 1.0,
+  "device": "cuda",
+  "early_stop_patience": 0,
+  "encoder_channels": [
+    16,
+    32,
+    64,
+    128,
+    128
+  ],
+  "epochs": 80,
+  "eval_every": 5,
+  "git_commit": "ec59040-dirty",
+  "grad_clip": 5.0,
+  "hop_length": 160,
+  "inference_ms_per_clip": 15.099529999997685,
+  "learning_rate": 0.0003,
+  "lookahead_frames": 2,
+  "lookahead_ms": 36.0,
+  "lstm_hidden": 256,
+  "lstm_layers": 2,
+  "mask_max": 1.0,
+  "n_fft": 512,
+  "optimizer": "adamw",
+  "parameters": 3018072,
+  "run_name": "0010_crn_spec200_aux02",
+  "seed": 0,
+  "sequence": 10,
+  "source_changed": {
+    "runlog.py": "+2 -1",
+    "train.py": "+133 -7"
+  },
+  "spectral_compression": 0.3,
+  "spectral_loss_weight": 200.0,
+  "started": "2026-08-31T15:07:51",
+  "steps_per_epoch": 80,
+  "total_latency_ms": 136.5033176666666,
+  "train_clips": 1292,
+  "val_clips": 143,
+  "weight_decay": 0.01
+}

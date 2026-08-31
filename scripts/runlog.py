@@ -95,7 +95,8 @@ def build_tag(config, keys=("lstm_hidden", "lookahead_frames")):
     """
     short = {"lstm_hidden": "h", "lookahead_frames": "la", "n_fft": "fft",
              "aux_loss_weight": "aux", "batch_size": "b",
-             "learning_rate": "lr", "encoder_width": "w"}
+             "learning_rate": "lr", "encoder_width": "w",
+             "spectral_loss_weight": "spec", "mask_max": "mask"}
     parts = []
     for k in keys:
         if k in config and config[k] is not None:

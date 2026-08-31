@@ -1,0 +1,1 @@
+Compressed-magnitude spectral loss, weight 200 (gradient-balanced). Control is 0009, identical except spec weight 0. Testing whether the PESQ ceiling at 1.68 is a loss/metric mismatch: oracle_ceiling.py showed 73% of achievable SI-SNR captured but only 23% of achievable PESQ.
