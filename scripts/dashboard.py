@@ -28,7 +28,7 @@ import json
 import argparse
 import posixpath
 import webbrowser
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs, unquote
 
 import runlog
@@ -85,6 +85,12 @@ def run_summary(name):
 
 
 class Handler(BaseHTTPRequestHandler):
+    # HTTP/1.1 keeps the connection open between requests, which matters on a
+    # page that pulls a dozen audio clips and mask images. Every response here
+    # sets Content-Length, which is what makes that safe.
+    protocol_version = "HTTP/1.1"
+    timeout = 30            # drop a socket that goes quiet rather than hold it
+
     def log_message(self, *a):
         pass                                    # quiet; this is a local tool
 
@@ -214,7 +220,14 @@ def main():
             webbrowser.open(url)
         except Exception:
             pass
-    HTTPServer(("0.0.0.0", args.port), Handler).serve_forever()
+    # Threaded, not the plain HTTPServer. A single-threaded server handles one
+    # connection at a time, and browsers open several speculatively and then
+    # sit on them -- which stalls every other client, so opening the page on a
+    # phone while a laptop has it open leaves the phone waiting a minute or
+    # more for a page that should be instant.
+    server = ThreadingHTTPServer(("0.0.0.0", args.port), Handler)
+    server.daemon_threads = True
+    server.serve_forever()
 
 
 if __name__ == "__main__":

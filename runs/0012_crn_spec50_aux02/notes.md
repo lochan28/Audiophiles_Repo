@@ -1,0 +1,1 @@
+Spectral weight 50: SI-SNR still leads. The lower bracket of the sweep around run 0010's weight of 200. If PESQ rises monotonically 50 -> 200 -> 600 the knob has a direction worth chasing; if 50 already matches 200, the gain came from adding the term at all rather than from its size.

@@ -1,0 +1,1 @@
+Spectral weight 600: spectral term LEADS (3x the gradient-balanced 200). Run 0010 gained +0.102 PESQ at weight 200 while giving up no SI-SNR at all, which suggests the balance point is not the optimum and the spectral term can take more of the gradient.

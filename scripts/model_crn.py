@@ -34,13 +34,46 @@ N_FFT = 512
 
 ENCODER_CHANNELS = (16, 32, 64, 128, 128)
 # How many different patterns each encoder layer looks for, and implicitly how
-# deep the encoder is (one layer per entry). Each layer also halves the pitch
-# axis, so 5 layers takes 257 bands down to 9.
+# deep the encoder is (one layer per entry).
 # HALVE ALL OF THESE for the "smaller arrangement" comparison in
 # PROJECT_CONTEXT_4.md Section 4 — it roughly quarters the parameter count and
 # is the first thing to try if train and validation loss diverge.
-# MORE layers squeeze pitch further and see broader patterns, but 5 is already
-# down to 9 bands; a 6th would leave 5 and start losing real detail.
+
+ENCODER_FREQ_STRIDES = (2, 2, 2, 2, 2)
+# Whether each encoder layer halves the pitch axis (2) or leaves it alone (1).
+# This decides how fine a picture the LSTM gets to make its decisions on, and
+# `scripts/mask_resolution.py` says that is the single most important number in
+# the model:
+#
+#   257 bands ---(2,2,2,2,2)--->  9 bands at the LSTM   ~28 bins per band
+#   257 bands ---(2,2,2,1,1)---> 33 bands at the LSTM    ~8 bins per band
+#
+# WHY IT MATTERS: voiced speech is a comb of harmonics spaced 3-8 bins apart at
+# this FFT size, and the noise to be removed sits in the gaps BETWEEN the
+# teeth. Blurring the ideal mask across just two neighbouring bins costs 0.90
+# PESQ of the 2.13 available; blurring across eight leaves a *perfect* mask
+# scoring 1.84, barely above what this model already achieves. The recurrent
+# core cannot cut between teeth it cannot see.
+#
+# TESTED, AND IT DID NOT WORK. Run 0013 used (2,2,2,1,1) and scored PESQ
+# 1.784 +- 0.012 against run 0011's 1.799 +- 0.007 on the same settings --
+# slightly worse, and it fit the TRAINING data worse too (-2.83 vs -3.38)
+# despite 2.3x the parameters, so the wider LSTM input is simply harder to
+# optimise. The reasoning was wrong because the SKIP CONNECTIONS already carry
+# full 257-band detail to the decoder: the model could always draw a sharp
+# mask, so giving the recurrent core a finer view fixed a limitation it did
+# not have. `scripts/mask_diagnosis.py` confirms it from the other side -- the
+# trained mask is only 1.4x smoother than the ideal one, and an ideal mask
+# blurred that far still scores 2.62 against the model's 1.66. The mask is
+# sharp and WRONG, not smooth.
+# The default is therefore back to all 2s. The knob stays because it is now
+# measured rather than assumed, and because a future change to N_FFT or to the
+# skip connections would put the question back on the table.
+# Fewer 2s cost parameters and time: the LSTM's input is channels x bands, so
+# 9 bands is 1152 features and 33 bands is 4224. Put any 1s LAST -- halving is
+# cheap and harmless early, where 257 and 129 bands are both far finer than the
+# harmonic spacing.
+# Must be the same length as ENCODER_CHANNELS. Entries must be 1 or 2.
 
 LOOKAHEAD_FRAMES = 2
 # How many frames of the FUTURE the layers are allowed to see. Each frame is
@@ -151,9 +184,13 @@ TOTAL_LOOKAHEAD_MS = (STFT_LOOKAHEAD_MS
                       + LOOKAHEAD_FRAMES * HOP_LENGTH / SAMPLE_RATE * 1000)
 
 
-def freq_after(n_bins):
-    """Pitch bands left after one encoder layer halves them."""
-    return (n_bins + 2 * (KERNEL_FREQ // 2) - KERNEL_FREQ) // 2 + 1
+def freq_after(n_bins, stride=2):
+    """Pitch bands left after one encoder layer.
+
+    At stride 2 the axis is halved; at stride 1 it comes through untouched,
+    which the arithmetic below gives for free: (n - 1) // 1 + 1 == n.
+    """
+    return (n_bins + 2 * (KERNEL_FREQ // 2) - KERNEL_FREQ) // stride + 1
 
 
 def lookahead_plan(total, n_layers):
@@ -197,16 +234,20 @@ class EncoderBlock(nn.Module):
     peeks ahead.
     """
 
-    def __init__(self, in_ch, out_ch, right_pad=0):
+    def __init__(self, in_ch, out_ch, right_pad=0, freq_stride=2):
         super().__init__()
         if not 0 <= right_pad <= KERNEL_TIME - 1:
             raise ValueError(f"right_pad must be 0..{KERNEL_TIME - 1}")
+        if freq_stride not in (1, 2):
+            raise ValueError("freq_stride must be 1 or 2")
         self.right_pad = right_pad
+        self.freq_stride = freq_stride
         # (freq_left, freq_right, time_left, time_right)
         self.pad = nn.ZeroPad2d((0, 0, KERNEL_TIME - 1 - right_pad, right_pad))
         self.conv = nn.Conv2d(in_ch, out_ch,
                               kernel_size=(KERNEL_TIME, KERNEL_FREQ),
-                              stride=(1, 2), padding=(0, KERNEL_FREQ // 2))
+                              stride=(1, freq_stride),
+                              padding=(0, KERNEL_FREQ // 2))
         # NOTE: BatchNorm mixes statistics across the whole clip, including
         # future frames, while *training*. At inference it uses stored running
         # statistics instead, so there is no leakage in the deployed model --
@@ -231,9 +272,14 @@ class Encoder(nn.Module):
     """
 
     def __init__(self, channels=ENCODER_CHANNELS, lookahead=LOOKAHEAD_FRAMES,
-                 right_pads=None):
+                 right_pads=None, freq_strides=ENCODER_FREQ_STRIDES):
         super().__init__()
         self.channels = tuple(channels)
+        self.freq_strides = tuple(freq_strides)
+        if len(self.freq_strides) != len(self.channels):
+            raise ValueError("freq_strides must have one entry per layer: "
+                             f"{len(self.freq_strides)} vs "
+                             f"{len(self.channels)} channels")
         if right_pads is None:
             right_pads = lookahead_plan(lookahead, len(self.channels))
         self.right_pads = list(right_pads)
@@ -241,10 +287,11 @@ class Encoder(nn.Module):
 
         blocks, in_ch, freq = [], 1, FREQ_BINS
         self.freq_path = [freq]
-        for out_ch, rp in zip(self.channels, self.right_pads):
-            blocks.append(EncoderBlock(in_ch, out_ch, rp))
+        for out_ch, rp, st in zip(self.channels, self.right_pads,
+                                  self.freq_strides):
+            blocks.append(EncoderBlock(in_ch, out_ch, rp, st))
             in_ch = out_ch
-            freq = freq_after(freq)
+            freq = freq_after(freq, st)
             self.freq_path.append(freq)
         self.blocks = nn.ModuleList(blocks)
         self.out_freq = freq
@@ -308,12 +355,14 @@ class DecoderBlock(nn.Module):
     padding is set to cancel that out exactly.
     """
 
-    def __init__(self, in_ch, out_ch, last=False):
+    def __init__(self, in_ch, out_ch, last=False, freq_stride=2):
         super().__init__()
+        self.freq_stride = freq_stride
         self.pad = nn.ZeroPad2d((0, 0, KERNEL_TIME - 1, 0))
         self.conv = nn.ConvTranspose2d(
             in_ch, out_ch, kernel_size=(KERNEL_TIME, KERNEL_FREQ),
-            stride=(1, 2), padding=(KERNEL_TIME - 1, KERNEL_FREQ // 2))
+            stride=(1, freq_stride),
+            padding=(KERNEL_TIME - 1, KERNEL_FREQ // 2))
         self.norm = None if last else nn.BatchNorm2d(out_ch)
         self.act = nn.Sigmoid() if last else nn.ELU()
 
@@ -336,14 +385,21 @@ class Decoder(nn.Module):
     "keep this much" dial for every pitch band at every moment.
     """
 
-    def __init__(self, channels=ENCODER_CHANNELS, mask_max=MASK_MAX):
+    def __init__(self, channels=ENCODER_CHANNELS, mask_max=MASK_MAX,
+                 freq_strides=ENCODER_FREQ_STRIDES):
         super().__init__()
         self.mask_max = mask_max
         rev = list(reversed(tuple(channels)))
+        # Walked in reverse alongside the channels, so each decoder layer undoes
+        # exactly the encoder layer it is paired with. A layer the encoder left
+        # at full resolution is one the decoder must not stretch.
+        rev_strides = list(reversed(tuple(freq_strides)))
         blocks = []
         for i, ch in enumerate(rev):
             out_ch = rev[i + 1] if i + 1 < len(rev) else 1
-            blocks.append(DecoderBlock(ch * 2, out_ch, last=(i == len(rev) - 1)))
+            blocks.append(DecoderBlock(ch * 2, out_ch,
+                                       last=(i == len(rev) - 1),
+                                       freq_stride=rev_strides[i]))
         self.blocks = nn.ModuleList(blocks)
 
     def forward(self, x, skips):
@@ -361,17 +417,20 @@ class CRN(nn.Module):
     inventing a signal, and it cannot hallucinate sound that was never there.
 
     The TIMING information of the noisy audio is reused unchanged; only
-    loudness is masked. That is this architecture's ceiling and exactly what
-    DCCRN's complex-valued layers exist to lift later.
+    loudness is masked. That was long assumed to be this architecture's
+    ceiling, and it is not: `scripts/oracle_ceiling.py` shows an ideal mask
+    keeping this same timing reaches PESQ 3.31 against a 2.5 target. What
+    actually limits the model is how fine a mask it can paint --- see
+    ENCODER_FREQ_STRIDES.
     """
 
     def __init__(self, channels=ENCODER_CHANNELS, lookahead=LOOKAHEAD_FRAMES,
                  hidden=LSTM_HIDDEN, layers=LSTM_LAYERS, mask_max=MASK_MAX,
-                 n_classes=N_CLASSES):
+                 n_classes=N_CLASSES, freq_strides=ENCODER_FREQ_STRIDES):
         super().__init__()
-        self.encoder = Encoder(channels, lookahead)
+        self.encoder = Encoder(channels, lookahead, freq_strides=freq_strides)
         self.memory = Memory(self.encoder.out_features, hidden, layers)
-        self.decoder = Decoder(channels, mask_max)
+        self.decoder = Decoder(channels, mask_max, freq_strides=freq_strides)
         self.lookahead = self.encoder.lookahead
 
         # The auxiliary branch. It reads the shared memory and guesses which
@@ -460,8 +519,22 @@ def self_test():
     enc = Encoder().eval()
     print(f"  pitch bands   " + " -> ".join(str(f) for f in enc.freq_path))
     print(f"  patterns      1 -> " + " -> ".join(str(c) for c in enc.channels))
+    print(f"  strides       " + " -> ".join(str(s) for s in enc.freq_strides))
 
-    assert enc.freq_path == [257, 129, 65, 33, 17, 9], enc.freq_path
+    # Derived from the strides rather than hard-coded, so that changing
+    # ENCODER_FREQ_STRIDES does not fail a test that is not actually about it.
+    expected, f = [FREQ_BINS], FREQ_BINS
+    for st in enc.freq_strides:
+        f = freq_after(f, st)
+        expected.append(f)
+    assert enc.freq_path == expected, (enc.freq_path, expected)
+    assert enc.freq_path[0] == 257 and enc.freq_path[1] == 129
+
+    bins_per_band = FREQ_BINS / enc.out_freq
+    print(f"  the LSTM sees {enc.out_freq} bands, {bins_per_band:.0f} original "
+          f"bins each")
+    print(f"  harmonics sit 3-8 bins apart, so it "
+          f"{'CAN' if bins_per_band <= 8 else 'CANNOT'} resolve them")
 
     with torch.no_grad():
         out, skips = enc(spec.abs())
@@ -481,8 +554,8 @@ def self_test():
     print(f"\n  time          {frames} frames in, {t} frames out of every "
           f"layer - unsqueezed")
 
-    assert (b, c, f) == (2, enc.channels[-1], 9), out.shape
-    assert enc.out_features == enc.channels[-1] * 9
+    assert (b, c, f) == (2, enc.channels[-1], enc.out_freq), out.shape
+    assert enc.out_features == enc.channels[-1] * enc.out_freq
     print(f"  bottleneck    {c} patterns x {f} bands = {enc.out_features} "
           f"numbers per frame, into the memory stage")
 
@@ -502,7 +575,7 @@ def self_test():
         y, _ = _sf.read(real_path, dtype="float32")
         with torch.no_grad():
             ro, _ = enc(to_spectrogram(torch.from_numpy(y).unsqueeze(0)).abs())
-        assert ro.shape == (1, enc.channels[-1], frames, 9), ro.shape
+        assert ro.shape == (1, enc.channels[-1], frames, enc.out_freq), ro.shape
         assert torch.isfinite(ro).all()
         print(f"  real audio    testing_039.wav -> {tuple(ro.shape)}, "
               f"all finite")
@@ -723,7 +796,10 @@ def self_test():
             dec_freq.append(x.shape[3])
     print(f"  pitch bands   " + " -> ".join(str(f) for f in dec_freq)
           + "   (back up)")
-    assert dec_freq == [9, 17, 33, 65, 129, 257], dec_freq
+    # The decoder must retrace the encoder's path exactly in reverse, whatever
+    # the strides are, or the skip connections would not line up.
+    assert dec_freq == list(reversed(model.encoder.freq_path)), \
+        (dec_freq, model.encoder.freq_path)
     assert dec_freq[-1] == FREQ_BINS
 
     with torch.no_grad():

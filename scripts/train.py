@@ -74,7 +74,7 @@ AUX_LOSS_WEIGHT = model_crn.AUX_LOSS_WEIGHT
 # How loudly the noise-classifier branch argues. 0.0 switches it off, which is
 # the experiment that answers whether it helps at all.
 
-SPECTRAL_LOSS_WEIGHT = 200.0
+SPECTRAL_LOSS_WEIGHT = 600.0
 # How loudly the compressed-magnitude grader argues, against SI-SNR's 1.0.
 # WHY IT EXISTS: oracle_ceiling.py showed the model reaches 73% of the best
 # SI-SNR physically achievable but only 23% of the best PESQ, which is what
@@ -87,9 +87,13 @@ SPECTRAL_LOSS_WEIGHT = 200.0
 # rather than guessed. `--loss-scales` backpropagates each term alone and
 # compares the size of the update it produces; the weight that makes them pull
 # equally hard is 381 at random init and 187 on run 0009's trained weights.
-# 200 sits in that range. Sensible sweep: 50 (SI-SNR still leads) to 600
-# (spectral leads). Do not reason about this from the printed loss VALUES --
-# their ratio swings from 8 to 451 over a run and means nothing.
+# 200 sits in that range. Do not reason about this from the printed loss
+# VALUES -- their ratio swings from 8 to 451 over a run and means nothing.
+# SWEPT, and the knob turned out to be nearly flat: 50 -> 1.780, 200 -> 1.784,
+# 600 -> 1.799, against 1.682 with the term switched off. Almost all of the
+# gain comes from having the term AT ALL, and twelve times the weight buys a
+# fifth as much again. 600 is the default because it was best and costs
+# nothing, but there is no further run hiding in this knob.
 
 SPECTRAL_COMPRESSION = 0.3
 # Power the magnitudes are raised to before comparing. 1.0 means raw power,
@@ -147,7 +151,8 @@ def build_crn(**over):
         lookahead=over.get("lookahead_frames", model_crn.LOOKAHEAD_FRAMES),
         hidden=over.get("lstm_hidden", model_crn.LSTM_HIDDEN),
         layers=over.get("lstm_layers", model_crn.LSTM_LAYERS),
-        mask_max=over.get("mask_max", model_crn.MASK_MAX))
+        mask_max=over.get("mask_max", model_crn.MASK_MAX),
+        freq_strides=over.get("freq_strides", model_crn.ENCODER_FREQ_STRIDES))
 
 
 # The registry. A new architecture is one entry here plus its model file.
@@ -415,6 +420,11 @@ def main():
                          "reproduces the SI-SNR-only runs up to 0009")
     ap.add_argument("--loss-scales", action="store_true",
                     help="print the size of each loss term and exit")
+    ap.add_argument("--lstm-hidden", type=int, default=model_crn.LSTM_HIDDEN,
+                    help="width of the memory stage")
+    ap.add_argument("--channel-scale", type=float, default=1.0,
+                    help="multiply every encoder layer's width by this; 1.5 "
+                         "reproduces the capacity of run 0002")
     ap.add_argument("--mask-max", type=float, default=model_crn.MASK_MAX,
                     help="mask ceiling; 1.0 attenuate only, >1 allows boosting")
     ap.add_argument("--eval-every", type=int, default=EVAL_EVERY)
@@ -450,7 +460,11 @@ def main():
     val_loader = DataLoader(val_set, batch_size=args.batch_size, shuffle=False,
                             num_workers=0)
 
-    model = ARCHITECTURES[args.arch](mask_max=args.mask_max).to(device)
+    channels = tuple(max(1, round(c * args.channel_scale))
+                     for c in model_crn.ENCODER_CHANNELS)
+    model = ARCHITECTURES[args.arch](mask_max=args.mask_max,
+                                     encoder_channels=channels,
+                                     lstm_hidden=args.lstm_hidden).to(device)
     n_params = sum(p.numel() for p in model.parameters())
 
     if args.loss_scales:
@@ -485,9 +499,16 @@ def main():
         "early_stop_patience": EARLY_STOP_PATIENCE, "seed": SEED,
         "n_fft": model_crn.N_FFT, "hop_length": model_crn.HOP_LENGTH,
         "lookahead_frames": model_crn.LOOKAHEAD_FRAMES,
-        "lstm_hidden": model_crn.LSTM_HIDDEN,
+        # From the arguments, not the module constants: these can be
+        # overridden per run and the record has to say what actually ran.
+        "lstm_hidden": args.lstm_hidden,
         "lstm_layers": model_crn.LSTM_LAYERS,
-        "encoder_channels": list(model_crn.ENCODER_CHANNELS),
+        "encoder_channels": list(channels),
+        "channel_scale": args.channel_scale,
+        "encoder_freq_strides": list(model_crn.ENCODER_FREQ_STRIDES),
+        # How many frequency bands the LSTM actually sees. The single number
+        # that says whether the recurrent core can resolve a harmonic comb.
+        "lstm_bands": model.encoder.out_freq,
         "mask_max": args.mask_max,
         "parameters": n_params, "device": str(device),
         "train_clips": len(train_set), "val_clips": len(val_set),
@@ -508,7 +529,8 @@ def main():
         print(f"resumed {run.name} at epoch {start_epoch}")
     else:
         run = RunLog.create(args.arch, config, notes=args.note,
-                            tag_keys=("spectral_loss_weight", "aux_loss_weight"))
+                            tag_keys=("spectral_loss_weight", "lstm_hidden",
+                                      "data_fraction"))
 
     infer_ms = measure_inference_ms(model, device)
     run.update_config(inference_ms_per_clip=infer_ms,
