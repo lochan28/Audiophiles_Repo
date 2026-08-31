@@ -61,22 +61,17 @@ def roughness(mask):
     return float((mask[:, :, 1:] - mask[:, :, :-1]).abs().mean())
 
 
-def load_model(run_name, device):
-    run = RunLog.open(run_name)
-    cfg = run.config()
-    channels = cfg.get("encoder_channels", model_crn.ENCODER_CHANNELS)
-    # Runs before 0013 predate ENCODER_FREQ_STRIDES and every one of them
-    # halved at every layer. Falling back to the CURRENT default would silently
-    # build the wrong shape for them.
-    strides = cfg.get("encoder_freq_strides", [2] * len(channels))
-    model = T.ARCHITECTURES[cfg.get("arch", "crn")](
-        encoder_channels=channels,
-        mask_max=cfg.get("mask_max", 1.0),
-        freq_strides=strides).to(device)
-    ck = torch.load(run.checkpoint_path("best.pt"), map_location=device,
-                    weights_only=False)
-    model.load_state_dict(ck["model"])
-    return model.eval(), ck["epoch"]
+def load_model(run_name, device, checkpoint="auto"):
+    """Shared by every diagnostic, so they all judge the same weights.
+
+    Defaults to "auto", which prefers best_pesq.pt. Diagnosing best.pt would
+    mean diagnosing a model chosen by validation loss, which on run 0014 was
+    39 epochs and 0.13 PESQ short of the model actually trained.
+    """
+    model, name, epoch = T.load_run_model(RunLog.open(run_name), device,
+                                          checkpoint)
+    print(f"loaded {name} (epoch {epoch})")
+    return model, epoch
 
 
 def main():

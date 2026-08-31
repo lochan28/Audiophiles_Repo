@@ -1,0 +1,108 @@
+{
+  "arch": "crn",
+  "aux_loss_weight": 0.2,
+  "batch_size": 16,
+  "changed_from": "0014_crn_spec600_h512_data1",
+  "changes": {
+    "channel_scale": {
+      "from": 1.5,
+      "to": 1.0
+    },
+    "data_fraction": {
+      "from": 1.0,
+      "to": 0.25
+    },
+    "encoder_channels": {
+      "from": [
+        24,
+        48,
+        96,
+        192,
+        192
+      ],
+      "to": [
+        16,
+        32,
+        64,
+        128,
+        128
+      ]
+    },
+    "inference_ms_per_clip": {
+      "from": 17.92421000000104,
+      "to": null
+    },
+    "lstm_hidden": {
+      "from": 512,
+      "to": 256
+    },
+    "parameters": {
+      "from": 9264512,
+      "to": 3018072
+    },
+    "total_latency_ms": {
+      "from": 136.5974736666667,
+      "to": null
+    },
+    "train_clips": {
+      "from": 1292,
+      "to": 323
+    }
+  },
+  "channel_scale": 1.0,
+  "chunk_ms": 100.0,
+  "classes": [
+    "ambient",
+    "assault_rifle",
+    "engine",
+    "heavy_artillery",
+    "helicopter",
+    "mortar",
+    "rocket"
+  ],
+  "data_fraction": 0.25,
+  "device": "cuda",
+  "early_stop_patience": 0,
+  "encoder_channels": [
+    16,
+    32,
+    64,
+    128,
+    128
+  ],
+  "encoder_freq_strides": [
+    2,
+    2,
+    2,
+    2,
+    2
+  ],
+  "epochs": 80,
+  "eval_every": 5,
+  "git_commit": "20f4744-dirty",
+  "grad_clip": 5.0,
+  "hop_length": 160,
+  "inference_ms_per_clip": 18.44636999994691,
+  "learning_rate": 0.0003,
+  "lookahead_frames": 2,
+  "lookahead_ms": 36.0,
+  "lstm_bands": 9,
+  "lstm_hidden": 256,
+  "lstm_layers": 2,
+  "mask_max": 1.0,
+  "n_fft": 512,
+  "optimizer": "adamw",
+  "parameters": 3018072,
+  "run_name": "0015_crn_spec600_h256_data025",
+  "seed": 0,
+  "sequence": 15,
+  "source_changed": {},
+  "spectral_compression": 0.3,
+  "spectral_loss_weight": 600.0,
+  "started": "2026-08-31T22:12:23",
+  "steps_per_epoch": 80,
+  "total_latency_ms": 136.61487899999824,
+  "train_clips": 323,
+  "val_clips": 143,
+  "weight_decay": 0.01
+}

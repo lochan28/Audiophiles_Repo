@@ -159,6 +159,57 @@ def build_crn(**over):
 ARCHITECTURES = {"crn": build_crn}
 
 
+# Which saved checkpoint to reach for, best first.
+#
+# best_pesq.pt before best.pt is the whole point: `best.pt` is chosen by
+# validation LOSS, and loss and PESQ diverge badly. On run 0014 the best-loss
+# epoch was 26 scoring PESQ 1.703 while the best-PESQ epoch was 65 scoring
+# 1.832, so deploying `best.pt` would have thrown away 0.13 PESQ that had
+# already been paid for. last.pt comes next because a converged run's final
+# weights are near its plateau, which is still better than an early stop.
+CHECKPOINT_PREFERENCE = ("best_pesq.pt", "last.pt", "best.pt")
+
+
+def build_from_config(cfg, device):
+    """Rebuild a model exactly as the recorded run built it.
+
+    Reading every shape from the run's own config, rather than from the module
+    constants, is what makes an old run loadable after the defaults move on.
+    """
+    channels = cfg.get("encoder_channels", model_crn.ENCODER_CHANNELS)
+    # Runs before 0013 predate ENCODER_FREQ_STRIDES and all halved at every
+    # layer; falling back to the current default would build the wrong shape.
+    strides = cfg.get("encoder_freq_strides", [2] * len(channels))
+    return ARCHITECTURES[cfg.get("arch", "crn")](
+        encoder_channels=channels,
+        lstm_hidden=cfg.get("lstm_hidden", model_crn.LSTM_HIDDEN),
+        lstm_layers=cfg.get("lstm_layers", model_crn.LSTM_LAYERS),
+        lookahead_frames=cfg.get("lookahead_frames",
+                                 model_crn.LOOKAHEAD_FRAMES),
+        mask_max=cfg.get("mask_max", model_crn.MASK_MAX),
+        freq_strides=strides).to(device)
+
+
+def load_run_model(run, device, checkpoint="auto"):
+    """Load a run's weights. Returns (model, checkpoint name, epoch).
+
+    "auto" walks CHECKPOINT_PREFERENCE and takes the first that exists, so
+    older runs without a best_pesq.pt still load something sensible.
+    """
+    names = (CHECKPOINT_PREFERENCE if checkpoint == "auto"
+             else (checkpoint if checkpoint.endswith(".pt")
+                   else checkpoint + ".pt",))
+    for name in names:
+        path = run.checkpoint_path(name)
+        if os.path.exists(path):
+            model = build_from_config(run.config(), device)
+            ck = torch.load(path, map_location=device, weights_only=False)
+            model.load_state_dict(ck["model"])
+            return model.eval(), name, ck.get("epoch")
+    raise FileNotFoundError(
+        f"no checkpoint in {run.name}; looked for {', '.join(names)}")
+
+
 # --------------------------------------------------------------------------
 # losses
 # --------------------------------------------------------------------------
@@ -518,6 +569,7 @@ def main():
     }
 
     start_epoch, best_val, patience = 1, float("inf"), 0
+    best_pesq = float("-inf")
     if args.resume:
         run = RunLog.open(args.resume)
         ck = torch.load(run.checkpoint_path("last.pt"), map_location=device,
@@ -526,6 +578,7 @@ def main():
         optimizer.load_state_dict(ck["optimizer"])
         start_epoch = ck["epoch"] + 1
         best_val = ck.get("best_val", float("inf"))
+        best_pesq = ck.get("best_pesq", float("-inf"))
         print(f"resumed {run.name} at epoch {start_epoch}")
     else:
         run = RunLog.create(args.arch, config, notes=args.note,
@@ -611,6 +664,19 @@ def main():
             row["eval_aux_accuracy"] = res["aux_accuracy"]
             row["by_category"] = res["by_category"]
             row["targets_met"] = res["targets_met"]
+
+            # Keep the best model BY QUALITY, separately from best.pt which is
+            # kept by validation loss. The two disagree by tens of epochs and
+            # over 0.1 PESQ, and it is this one that should be deployed and
+            # evaluated. See CHECKPOINT_PREFERENCE.
+            if o["pesq_enhanced"] is not None and o["pesq_enhanced"] > best_pesq:
+                best_pesq = o["pesq_enhanced"]
+                torch.save({"model": model.state_dict(), "epoch": epoch,
+                            "config": run.config(), "pesq": best_pesq},
+                           run.checkpoint_path("best_pesq.pt"))
+                print(f"           new best PESQ {best_pesq:.4f}, "
+                      f"saved best_pesq.pt")
+            row["best_pesq"] = best_pesq
             print(f"     eval  PESQ {o['pesq_noisy']:.2f} -> "
                   f"{o['pesq_enhanced']:.2f}   "
                   f"STOI {o['stoi_noisy']:.3f} -> {o['stoi_enhanced']:.3f}   "
@@ -619,7 +685,8 @@ def main():
 
         torch.save({"model": model.state_dict(),
                     "optimizer": optimizer.state_dict(), "epoch": epoch,
-                    "best_val": best_val}, run.checkpoint_path("last.pt"))
+                    "best_val": best_val, "best_pesq": best_pesq},
+                   run.checkpoint_path("last.pt"))
         run.log(**row)
 
 

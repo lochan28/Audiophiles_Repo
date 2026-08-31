@@ -204,7 +204,10 @@ def main():
     ap.add_argument("run", help="run directory name, e.g. 0001_crn_h256_la2")
     ap.add_argument("--split", default="testing",
                     choices=["validation", "testing"])
-    ap.add_argument("--checkpoint", default="best", choices=["best", "last"])
+    ap.add_argument("--checkpoint", default="auto",
+                    choices=["auto", "best_pesq", "best", "last"],
+                    help="auto prefers best_pesq.pt; 'best' is chosen by "
+                         "validation LOSS and can be tens of epochs early")
     ap.add_argument("--max-clips", type=int, default=None)
     args = ap.parse_args()
 
@@ -213,14 +216,12 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     import train
-    model = train.ARCHITECTURES[cfg.get("arch", "crn")]().to(device)
-    ck = torch.load(run.checkpoint_path(args.checkpoint + ".pt"),
-                    map_location=device, weights_only=False)
-    model.load_state_dict(ck["model"])
-    epoch = ck.get("epoch")
+    # Shared loader: it rebuilds the model from the run's OWN config, so a run
+    # made before a default changed still loads with the right shapes.
+    model, ck_name, epoch = train.load_run_model(run, device, args.checkpoint)
 
     print(f"run           {run.name}")
-    print(f"checkpoint    {args.checkpoint}.pt from epoch {epoch}")
+    print(f"checkpoint    {ck_name} from epoch {epoch}")
     print(f"split         {args.split} (frozen mixtures)")
 
     dataset = FrozenMixtures(args.split)
