@@ -38,6 +38,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 
 from mixing import SpeechNoiseMixtures, FrozenMixtures, read_noise_classes
+import mixing
 from runlog import RunLog, RUNS_DIR
 import model_crn
 
@@ -643,6 +644,11 @@ def main():
         "parameters": n_params, "device": str(device),
         "train_clips": len(train_set), "val_clips": len(val_set),
         "classes": classes,
+        # Which SNR distribution produced this run's training data AND
+        # the frozen set it is scored on. Runs with different profiles
+        # are NOT comparable: the 90/10 change alone moves the headline
+        # numbers by about +0.13 PESQ with the model untouched.
+        "snr_profile": mixing.SNR_PROFILE,
         "lookahead_ms": model_crn.STFT_LOOKAHEAD_MS + args.lookahead * 10.0,
         "chunk_ms": model_crn.CHUNK_SAMPLES / SAMPLE_RATE * 1000,
     }

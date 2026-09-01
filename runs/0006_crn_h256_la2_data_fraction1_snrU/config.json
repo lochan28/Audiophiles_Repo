@@ -1,0 +1,69 @@
+{
+  "arch": "crn",
+  "aux_loss_weight": 0.2,
+  "batch_size": 16,
+  "changed_from": "0005_crn_h256_la2_data_fraction1_snrU",
+  "changes": {
+    "inference_ms_per_clip": {
+      "from": 16.204970000399044,
+      "to": null
+    },
+    "mask_max": {
+      "from": 1.0,
+      "to": 2.0
+    },
+    "total_latency_ms": {
+      "from": 136.54016566667997,
+      "to": null
+    }
+  },
+  "chunk_ms": 100.0,
+  "classes": [
+    "ambient",
+    "assault_rifle",
+    "engine",
+    "heavy_artillery",
+    "helicopter",
+    "mortar",
+    "rocket"
+  ],
+  "data_fraction": 1.0,
+  "device": "cuda",
+  "early_stop_patience": 12,
+  "encoder_channels": [
+    16,
+    32,
+    64,
+    128,
+    128
+  ],
+  "epochs": 150,
+  "eval_every": 5,
+  "git_commit": "ec59040-dirty",
+  "grad_clip": 5.0,
+  "hop_length": 160,
+  "inference_ms_per_clip": 47.19445999999152,
+  "learning_rate": 0.0003,
+  "lookahead_frames": 2,
+  "lookahead_ms": 36.0,
+  "lstm_hidden": 256,
+  "lstm_layers": 2,
+  "mask_max": 2.0,
+  "n_fft": 512,
+  "optimizer": "adamw",
+  "parameters": 3018072,
+  "run_name": "0006_crn_h256_la2_data_fraction1_snrU",
+  "seed": 0,
+  "sequence": 6,
+  "source_changed": {
+    "model_crn.py": "+1 -1"
+  },
+  "started": "2026-08-31T11:12:59",
+  "steps_per_epoch": 80,
+  "total_latency_ms": 137.57314866666638,
+  "train_clips": 1292,
+  "val_clips": 143,
+  "weight_decay": 0.01,
+  "snr_profile": "uniform U(-5,+15)",
+  "snr_profile_note": "Scored on the archived frozen set in generated_test_mixtures_snr_uniform/, built from a flat U(-5,+15) draw in which a quarter of every set sat below 0 dB. NOT comparable with runs carrying a 90/10 profile."
+}

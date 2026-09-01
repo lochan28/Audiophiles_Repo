@@ -1,0 +1,86 @@
+{
+  "arch": "crn",
+  "aux_loss_weight": 0.2,
+  "batch_size": 16,
+  "changed_from": "0018_crn_spec600_h512_data1_s2_snrU",
+  "changes": {
+    "inference_ms_per_clip": {
+      "from": 20.104649999848334,
+      "to": null
+    },
+    "mask_loss_weight": {
+      "from": null,
+      "to": 100.0
+    },
+    "seed": {
+      "from": 2,
+      "to": 0
+    },
+    "total_latency_ms": {
+      "from": 136.67015499999493,
+      "to": null
+    }
+  },
+  "channel_scale": 1.5,
+  "chunk_ms": 100.0,
+  "classes": [
+    "ambient",
+    "assault_rifle",
+    "engine",
+    "heavy_artillery",
+    "helicopter",
+    "mortar",
+    "rocket"
+  ],
+  "data_fraction": 1.0,
+  "device": "cuda",
+  "early_stop_patience": 0,
+  "encoder_channels": [
+    24,
+    48,
+    96,
+    192,
+    192
+  ],
+  "encoder_freq_strides": [
+    2,
+    2,
+    2,
+    2,
+    2
+  ],
+  "epochs": 150,
+  "eval_every": 5,
+  "git_commit": "727107f-dirty",
+  "grad_clip": 5.0,
+  "hop_length": 160,
+  "inference_ms_per_clip": 16.90545999999813,
+  "learning_rate": 0.0003,
+  "lookahead_frames": 2,
+  "lookahead_ms": 36.0,
+  "lstm_bands": 9,
+  "lstm_hidden": 512,
+  "lstm_layers": 2,
+  "mask_loss_weight": 100.0,
+  "mask_max": 1.0,
+  "n_fft": 512,
+  "optimizer": "adamw",
+  "parameters": 9264512,
+  "run_name": "0019_crn_spec600_h512_mloss100_s0_snrU",
+  "seed": 0,
+  "sequence": 19,
+  "source_changed": {
+    "runlog.py": "+2 -1",
+    "train.py": "+77 -20"
+  },
+  "spectral_compression": 0.3,
+  "spectral_loss_weight": 600.0,
+  "started": "2026-09-01T11:29:39",
+  "steps_per_epoch": 80,
+  "total_latency_ms": 136.56351533333327,
+  "train_clips": 1292,
+  "val_clips": 143,
+  "weight_decay": 0.01,
+  "snr_profile": "uniform U(-5,+15)",
+  "snr_profile_note": "Scored on the archived frozen set in generated_test_mixtures_snr_uniform/, built from a flat U(-5,+15) draw in which a quarter of every set sat below 0 dB. NOT comparable with runs carrying a 90/10 profile."
+}

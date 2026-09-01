@@ -70,6 +70,10 @@
   .card .v { font-size: 20px; font-weight: 650; margin-top: 2px; font-variant-numeric: tabular-nums; }
   .card .s { color: var(--dim); font-size: 11.5px; margin-top: 1px; }
   .hit { color: var(--good); } .miss { color: var(--warn); }
+  /* Marks a run scored on the archived flat-SNR mixtures. */
+  .legacy { font-size: 9.5px; font-weight: 600; letter-spacing: .04em;
+            border: 1px solid var(--warn); color: var(--warn);
+            border-radius: 3px; padding: 0 4px; margin-left: 6px; }
 
   /* How far along the journey from the noisy input to the target we are.
      0% is "no better than the noisy audio", 100% is "target reached". */
@@ -267,6 +271,7 @@ function renderRunList() {
       <div class="top">
         <span class="dot" style="background:${on ? c : "var(--line)"}"></span>
         <span class="name">${r.name}</span>
+        ${r.snr_profile && r.snr_profile.indexOf("uniform") === 0 ? '<span class="legacy" title="Scored on the archived flat U(-5,+15) mixtures - not comparable with current runs">old SNR</span>' : ""}
         ${r.running ? '<span class="live" style="font-size:10px">live</span>' : ""}
         ${r.stop_requested ? '<span class="miss" style="font-size:10px;font-weight:600">stopping</span>' : ""}
       </div>

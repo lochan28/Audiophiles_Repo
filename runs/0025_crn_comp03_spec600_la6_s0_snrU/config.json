@@ -1,0 +1,89 @@
+{
+  "arch": "crn",
+  "aux_loss_weight": 0.2,
+  "batch_size": 16,
+  "changed_from": "0024_crn_comp03_spec600_la4_s0_snrU",
+  "changes": {
+    "epochs_completed": {
+      "from": 100,
+      "to": null
+    },
+    "inference_ms_per_clip": {
+      "from": 34.52893000066979,
+      "to": null
+    },
+    "lookahead_frames": {
+      "from": 4,
+      "to": 6
+    },
+    "lookahead_ms": {
+      "from": 56.0,
+      "to": 76.0
+    },
+    "total_latency_ms": {
+      "from": 157.15096433335566,
+      "to": null
+    }
+  },
+  "channel_scale": 1.5,
+  "chunk_ms": 100.0,
+  "classes": [
+    "ambient",
+    "assault_rifle",
+    "engine",
+    "heavy_artillery",
+    "helicopter",
+    "mortar",
+    "rocket"
+  ],
+  "data_fraction": 1.0,
+  "device": "cuda",
+  "early_stop_patience": 0,
+  "encoder_channels": [
+    24,
+    48,
+    96,
+    192,
+    192
+  ],
+  "encoder_freq_strides": [
+    2,
+    2,
+    2,
+    2,
+    2
+  ],
+  "epochs": 100,
+  "epochs_completed": 150,
+  "eval_every": 5,
+  "git_commit": "4e0d25b-dirty",
+  "grad_clip": 5.0,
+  "hop_length": 160,
+  "inference_ms_per_clip": 17.74141999994754,
+  "learning_rate": 0.0003,
+  "lookahead_frames": 6,
+  "lookahead_ms": 76.0,
+  "lstm_bands": 9,
+  "lstm_hidden": 512,
+  "lstm_layers": 2,
+  "mask_loss_weight": 0.0,
+  "mask_max": 1.0,
+  "n_fft": 512,
+  "optimizer": "adamw",
+  "parameters": 9264512,
+  "run_name": "0025_crn_comp03_spec600_la6_s0_snrU",
+  "seed": 0,
+  "sequence": 25,
+  "source_changed": {},
+  "spectral_compression": 0.3,
+  "spectral_loss_weight": 600.0,
+  "started": "2026-09-01T20:36:40",
+  "steps_per_epoch": 80,
+  "stopped_early": null,
+  "total_latency_ms": 176.59138066666492,
+  "train_clips": 1292,
+  "val_clips": 143,
+  "weight_decay": 0.01,
+  "snr_profile": "uniform U(-5,+15)",
+  "snr_profile_note": "Scored on the archived frozen set in generated_test_mixtures_snr_uniform/, built from a flat U(-5,+15) draw in which a quarter of every set sat below 0 dB. NOT comparable with runs carrying a 90/10 profile."
+}

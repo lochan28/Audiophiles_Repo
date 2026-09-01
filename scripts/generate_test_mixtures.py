@@ -36,13 +36,15 @@ import sys
 import numpy as np
 import soundfile as sf
 
-from mixing import (SpeechNoiseMixtures, PROJECT_ROOT, TARGET_SR,
+from mixing import (SpeechNoiseMixtures, PROJECT_ROOT, TARGET_SR, low_band_selection,
                     CLIP_SAMPLES, EPS)
 
 OUTPUT_DIR = os.path.join(PROJECT_ROOT, "generated_test_mixtures")
 FROZEN_SPLITS = ["validation", "testing"]
 
-SEED = 20260830              # change this only to deliberately reroll the set
+SEED = 20260901              # rerolled for the 90/10 SNR distribution; 20260830 built
+                             # the archived flat-U(-5,15) set in
+                             # generated_test_mixtures_snr_uniform/
 SUBTYPE = "PCM_16"
 
 MANIFEST_FIELDNAMES = [
@@ -80,7 +82,12 @@ def measured_snr(clean, noisy, span):
 def generate(apply):
     rows = []
     for split in FROZEN_SPLITS:
-        ds = SpeechNoiseMixtures(split, seed=SEED)
+        # A frozen set's composition is fixed, not sampled: exactly
+        # SNR_LOW_FRACTION of it sits in the punishing band, spread evenly.
+        probe = SpeechNoiseMixtures(split, seed=SEED)
+        ds = SpeechNoiseMixtures(
+            split, seed=SEED,
+            low_band_indices=low_band_selection(len(probe)))
         noisy_dir = os.path.join(OUTPUT_DIR, split, "noisy")
         clean_dir = os.path.join(OUTPUT_DIR, split, "clean")
         if apply:

@@ -1,0 +1,99 @@
+{
+  "arch": "crn",
+  "aux_loss_weight": 0.2,
+  "batch_size": 16,
+  "changed_from": "0012_crn_spec50_aux02_snrU",
+  "changes": {
+    "encoder_freq_strides": {
+      "from": null,
+      "to": [
+        2,
+        2,
+        2,
+        1,
+        1
+      ]
+    },
+    "inference_ms_per_clip": {
+      "from": 14.355699999987337,
+      "to": null
+    },
+    "lstm_bands": {
+      "from": null,
+      "to": 33
+    },
+    "parameters": {
+      "from": 3018072,
+      "to": 6953304
+    },
+    "spectral_loss_weight": {
+      "from": 50.0,
+      "to": 600.0
+    },
+    "total_latency_ms": {
+      "from": 136.4785233333329,
+      "to": null
+    }
+  },
+  "chunk_ms": 100.0,
+  "classes": [
+    "ambient",
+    "assault_rifle",
+    "engine",
+    "heavy_artillery",
+    "helicopter",
+    "mortar",
+    "rocket"
+  ],
+  "data_fraction": 1.0,
+  "device": "cuda",
+  "early_stop_patience": 0,
+  "encoder_channels": [
+    16,
+    32,
+    64,
+    128,
+    128
+  ],
+  "encoder_freq_strides": [
+    2,
+    2,
+    2,
+    1,
+    1
+  ],
+  "epochs": 80,
+  "eval_every": 5,
+  "git_commit": "218645f-dirty",
+  "grad_clip": 5.0,
+  "hop_length": 160,
+  "inference_ms_per_clip": 14.124570000012682,
+  "learning_rate": 0.0003,
+  "lookahead_frames": 2,
+  "lookahead_ms": 36.0,
+  "lstm_bands": 33,
+  "lstm_hidden": 256,
+  "lstm_layers": 2,
+  "mask_max": 1.0,
+  "n_fft": 512,
+  "optimizer": "adamw",
+  "parameters": 6953304,
+  "run_name": "0013_crn_spec600_bands33_snrU",
+  "seed": 0,
+  "sequence": 13,
+  "source_changed": {
+    "model_crn.py": "+91 -28",
+    "runlog.py": "+2 -1",
+    "train.py": "+15 -6"
+  },
+  "spectral_compression": 0.3,
+  "spectral_loss_weight": 600.0,
+  "started": "2026-08-31T20:55:39",
+  "steps_per_epoch": 80,
+  "total_latency_ms": 136.47081900000043,
+  "train_clips": 1292,
+  "val_clips": 143,
+  "weight_decay": 0.01,
+  "snr_profile": "uniform U(-5,+15)",
+  "snr_profile_note": "Scored on the archived frozen set in generated_test_mixtures_snr_uniform/, built from a flat U(-5,+15) draw in which a quarter of every set sat below 0 dB. NOT comparable with runs carrying a 90/10 profile."
+}

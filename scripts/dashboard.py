@@ -72,6 +72,10 @@ def run_summary(name):
     return {
         "name": name,
         "arch": cfg.get("arch"),
+        # Which SNR distribution this run was trained and scored on.
+        # Runs with different profiles sat different exams and their
+        # scores cannot be read against each other.
+        "snr_profile": cfg.get("snr_profile", "unrecorded"),
         "sequence": cfg.get("sequence"),
         "started": cfg.get("started"),
         "note": run.notes(),

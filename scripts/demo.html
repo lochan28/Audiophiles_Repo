@@ -1,0 +1,652 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#14171c" media="(prefers-color-scheme: dark)">
+<title>ANC live bench</title>
+<style>
+  :root {
+    --bg: #ffffff; --panel: #f6f7f9; --line: #e2e5ea; --ink: #14171c;
+    --dim: #666e7a; --accent: #2563eb; --good: #16a34a; --warn: #d97706;
+    --bad: #dc2626;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14171c; --panel: #1c2027; --line: #2b313a; --ink: #e8eaee;
+      --dim: #949cab; --accent: #60a5fa; --good: #4ade80; --warn: #fbbf24;
+      --bad: #f87171;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    -webkit-text-size-adjust: 100%;
+    font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  header {
+    padding: 12px 20px; border-bottom: 1px solid var(--line);
+    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+    position: sticky; top: 0; z-index: 20; background: var(--bg);
+  }
+  header h1 { font-size: 16px; margin: 0; font-weight: 650; }
+  .muted { color: var(--dim); font-size: 12px; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .pill {
+    border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px;
+    font-size: 11.5px; color: var(--dim); background: var(--panel);
+  }
+  main { max-width: 1180px; margin: 0 auto; padding: 18px 20px 80px; }
+
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em;
+       color: var(--dim); margin: 26px 0 10px; font-weight: 650; }
+  h2:first-child { margin-top: 0; }
+
+  .panel { border: 1px solid var(--line); border-radius: 10px;
+           background: var(--panel); padding: 14px; }
+
+  /* ---- source picker ---- */
+  .tabs { display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; }
+  .tabs button {
+    background: var(--bg); color: var(--dim); border: 1px solid var(--line);
+    border-radius: 8px; padding: 7px 14px; font: inherit; font-size: 13px;
+    cursor: pointer; font-weight: 550;
+  }
+  .tabs button.on { color: var(--ink); border-color: var(--accent);
+                    box-shadow: inset 0 -2px 0 var(--accent); }
+  .pane { display: none; } .pane.on { display: block; }
+
+  select, input[type=file], button.act {
+    background: var(--bg); color: var(--ink); border: 1px solid var(--line);
+    border-radius: 8px; padding: 7px 10px; font: inherit; font-size: 13px;
+  }
+  button.act { cursor: pointer; font-weight: 600; }
+  button.act:hover { border-color: var(--accent); color: var(--accent); }
+  button.act[disabled] { opacity: .45; cursor: not-allowed; }
+  button.rec { border-color: var(--bad); color: var(--bad); }
+  button.rec.live { background: var(--bad); color: #fff; }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .grow { flex: 1; min-width: 200px; }
+
+  /* ---- metric cards ---- */
+  .cards { display: grid; gap: 10px; margin-bottom: 4px;
+           grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+  .card { border: 1px solid var(--line); border-radius: 9px; padding: 11px 13px;
+          background: var(--bg); }
+  .card .k { color: var(--dim); font-size: 11.5px; }
+  .card .v { font-size: 21px; font-weight: 650; margin-top: 1px;
+             font-variant-numeric: tabular-nums; }
+  .card .s { color: var(--dim); font-size: 11.5px; }
+  .up { color: var(--good); } .down { color: var(--bad); }
+  .bar { height: 4px; border-radius: 3px; background: var(--line);
+         margin-top: 8px; overflow: hidden; }
+  .bar i { display: block; height: 100%; border-radius: 3px; }
+
+  /* ---- players ---- */
+  .players { display: grid; gap: 10px;
+             grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); }
+  .player { border: 1px solid var(--line); border-radius: 9px; padding: 10px 12px;
+            background: var(--bg); }
+  .player .t { font-size: 12.5px; font-weight: 620; margin-bottom: 2px; }
+  .player .d { color: var(--dim); font-size: 11.5px; margin-bottom: 7px; }
+  audio { width: 100%; height: 34px; display: block; }
+
+  /* ---- spectrograms ---- */
+  .spec { margin-bottom: 12px; }
+  .spec .cap { display: flex; justify-content: space-between; align-items: baseline;
+               gap: 10px; margin-bottom: 4px; flex-wrap: wrap; }
+  .spec .cap b { font-size: 12.5px; font-weight: 620; }
+  .specwrap { position: relative; border: 1px solid var(--line);
+              border-radius: 8px; overflow: hidden; background: #000;
+              cursor: crosshair; }
+  .specwrap canvas { display: block; width: 100%; height: 150px;
+                     image-rendering: auto; }
+  .playhead { position: absolute; top: 0; bottom: 0; width: 2px;
+              background: rgba(255,255,255,.85); pointer-events: none;
+              left: 0; display: none;
+              box-shadow: 0 0 6px rgba(255,255,255,.8); }
+  .axis { display: flex; justify-content: space-between;
+          font-size: 10.5px; color: var(--dim); margin-top: 2px; }
+  .freqlab { position: absolute; left: 4px; font-size: 10px;
+             color: rgba(255,255,255,.7); pointer-events: none;
+             text-shadow: 0 0 3px #000; }
+
+  /* ---- aux classifier ---- */
+  .probs { display: grid; gap: 5px; }
+  .prob { display: grid; grid-template-columns: 110px 1fr 46px; gap: 8px;
+          align-items: center; font-size: 12px; }
+  .prob .track { height: 8px; background: var(--line); border-radius: 4px;
+                 overflow: hidden; }
+  .prob .fill { height: 100%; background: var(--accent); border-radius: 4px; }
+  .prob.true .fill { background: var(--good); }
+  .prob .n { text-align: right; font-variant-numeric: tabular-nums;
+             color: var(--dim); }
+
+  .scrollx { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .status { font-size: 12.5px; color: var(--dim); min-height: 20px; }
+  .err { color: var(--bad); }
+  .empty { color: var(--dim); padding: 26px 0; }
+  .spin { display: inline-block; width: 11px; height: 11px; border-radius: 50%;
+          border: 2px solid var(--line); border-top-color: var(--accent);
+          animation: sp .7s linear infinite; vertical-align: -1px;
+          margin-right: 6px; }
+  @keyframes sp { to { transform: rotate(360deg); } }
+
+  @media (max-width: 780px) {
+    main { padding: 14px 12px 60px; }
+    header { padding: 10px 14px; gap: 8px; }
+    .cards { grid-template-columns: 1fr 1fr; }
+    .players, .charts { grid-template-columns: 1fr; }
+    select, input[type=file], button.act, .tabs button { font-size: 16px; }
+    .specwrap canvas { height: 120px; }
+    .prob { grid-template-columns: 84px 1fr 40px; font-size: 11.5px; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>ANC live bench</h1>
+  <span class="pill mono" id="modelPill">loading…</span>
+  <span class="pill" id="devicePill"></span>
+  <span class="pill" id="latencyPill"></span>
+</header>
+
+<main>
+  <h2>1 · Give it some audio</h2>
+  <div class="panel">
+    <div class="tabs">
+      <button class="on" data-pane="testset">From the test set</button>
+      <button data-pane="upload">Upload a file</button>
+      <button data-pane="record">Record from mic</button>
+    </div>
+
+    <div class="pane on" id="pane-testset">
+      <div class="row">
+        <select id="split">
+          <option value="testing">testing (held out, never tuned on)</option>
+          <option value="validation">validation (tuned against)</option>
+        </select>
+        <select id="category"><option value="">every noise type</option></select>
+        <select id="clip" class="grow"></select>
+        <button class="act" id="goTest">Enhance</button>
+      </div>
+      <div class="muted" style="margin-top:8px">
+        These are the only clips with a clean reference on disk, so they are the
+        only ones that can be <b>scored</b>. Everything else can be listened to
+        but not measured.
+      </div>
+    </div>
+
+    <div class="pane" id="pane-upload">
+      <div class="row">
+        <input type="file" id="file" accept="audio/*" class="grow">
+        <button class="act" id="goUpload" disabled>Enhance</button>
+      </div>
+      <div class="muted" style="margin-top:8px">
+        Any format your browser can play. It is decoded and resampled to
+        16 kHz mono in the browser, so nothing about codecs reaches the server.
+      </div>
+    </div>
+
+    <div class="pane" id="pane-record">
+      <div class="row">
+        <button class="act rec" id="recBtn">● Start recording</button>
+        <span class="status" id="recStatus">Speak with some noise around you.</span>
+      </div>
+      <div class="muted" style="margin-top:8px">
+        The microphone needs a secure context, so this works on
+        <b>localhost</b> but not over plain http from a phone. Use upload there.
+      </div>
+    </div>
+
+    <div class="row" style="margin-top:12px">
+      <span class="muted">model</span>
+      <select id="run" class="grow"></select>
+    </div>
+    <div class="status" id="status" style="margin-top:10px"></div>
+  </div>
+
+  <div id="results" style="display:none">
+
+    <h2>2 · Listen</h2>
+    <div class="players" id="players"></div>
+
+    <h2 id="scoreHead">3 · What it did to the numbers</h2>
+    <div class="cards" id="cards"></div>
+    <div class="muted" id="scoreNote" style="margin-top:8px"></div>
+
+    <h2>4 · What it did to the sound</h2>
+    <div class="panel">
+      <div class="muted" style="margin-bottom:10px">
+        Time runs left to right, pitch runs bottom to top, bright means loud.
+        All panels share one brightness scale, so a model that merely turned the
+        volume down could not fake a clean picture here.
+        <b>Click any panel to seek</b> the audio playing above.
+      </div>
+      <div id="specs"></div>
+    </div>
+
+    <h2>5 · What the model thinks it is hearing</h2>
+    <div class="panel">
+      <div class="muted" style="margin-bottom:10px">
+        A second head on the same encoder guesses the noise type. It never
+        cleans anything — it exists to force the encoder to learn what each
+        noise <i>is</i> — but it is the one place the model says out loud what
+        it thinks it is listening to.
+      </div>
+      <div class="probs" id="probs"></div>
+    </div>
+
+    <h2>6 · Could this run live?</h2>
+    <div class="panel">
+      <div class="cards" id="timing"></div>
+      <div class="muted" id="timingNote" style="margin-top:10px"></div>
+    </div>
+
+    <h2>7 · The path your audio just took</h2>
+    <div class="panel scrollx" id="pipeline"></div>
+  </div>
+</main>
+
+<script>
+const S = {info: null, clips: [], result: null, audios: {}, active: null};
+const fmt = (v, d = 3) => (v === null || v === undefined || Number.isNaN(v))
+  ? "—" : (+v).toFixed(d);
+
+// Perceptual-ish colour ramp for spectrograms. Dark for quiet, hot for loud.
+const MAGMA = [[0,[0,0,4]],[.25,[59,15,112]],[.5,[140,41,129]],
+               [.75,[222,73,104]],[.9,[254,159,109]],[1,[252,253,191]]];
+// A different ramp for the mask so it is never confused with a spectrogram.
+const MASKMAP = [[0,[8,16,28]],[.5,[42,157,143]],[1,[233,245,219]]];
+
+function ramp(stops, t) {
+  for (let i = 1; i < stops.length; i++) {
+    if (t <= stops[i][0]) {
+      const [a, ca] = stops[i - 1], [b, cb] = stops[i];
+      const f = (t - a) / (b - a || 1);
+      return [0, 1, 2].map(k => ca[k] + (cb[k] - ca[k]) * f);
+    }
+  }
+  return stops[stops.length - 1][1];
+}
+
+function lut(stops) {
+  const t = new Uint8ClampedArray(256 * 3);
+  for (let i = 0; i < 256; i++) {
+    const c = ramp(stops, i / 255);
+    t[i * 3] = c[0]; t[i * 3 + 1] = c[1]; t[i * 3 + 2] = c[2];
+  }
+  return t;
+}
+const LUT_SPEC = lut(MAGMA), LUT_MASK = lut(MASKMAP);
+
+// The server sends (frames x bins) as one byte per cell. Draw it with time on
+// x and frequency on y, flipped so low pitch sits at the bottom the way every
+// spectrogram is drawn.
+function drawSpec(canvas, b64, frames, bins, table) {
+  const raw = atob(b64);
+  const img = new ImageData(frames, bins);
+  const px = img.data;
+  for (let t = 0; t < frames; t++) {
+    for (let f = 0; f < bins; f++) {
+      const v = raw.charCodeAt(t * bins + f);
+      const o = ((bins - 1 - f) * frames + t) * 4;
+      px[o] = table[v * 3]; px[o + 1] = table[v * 3 + 1];
+      px[o + 2] = table[v * 3 + 2]; px[o + 3] = 255;
+    }
+  }
+  const off = document.createElement("canvas");
+  off.width = frames; off.height = bins;
+  off.getContext("2d").putImageData(img, 0, 0);
+  canvas.width = frames; canvas.height = bins;
+  const ctx = canvas.getContext("2d");
+  ctx.imageSmoothingEnabled = true;
+  ctx.drawImage(off, 0, 0);
+}
+
+function specBlock(id, title, note) {
+  return `<div class="spec">
+    <div class="cap"><b>${title}</b><span class="muted">${note}</span></div>
+    <div class="specwrap" data-spec="${id}">
+      <canvas id="cv-${id}"></canvas>
+      <div class="freqlab" style="top:3px">8 kHz</div>
+      <div class="freqlab" style="bottom:3px">0</div>
+      <div class="playhead" id="ph-${id}"></div>
+    </div>
+  </div>`;
+}
+
+// ------------------------------------------------------------------ load
+
+async function boot() {
+  const info = await (await fetch("/api/info")).json();
+  S.info = info;
+  const m = info.model;
+  modelPill.textContent = `${m.run} · ${m.checkpoint} · epoch ${m.epoch}`;
+  devicePill.textContent = m.device.toUpperCase();
+  latencyPill.textContent = `${Math.round(m.latency_ms)} ms latency`;
+  run.innerHTML = info.runs.map(r =>
+    `<option value="${r.name}" ${r.name === m.run ? "selected" : ""}>${r.name}`
+    + `${r.pesq ? "  —  PESQ " + r.pesq.toFixed(3) : ""}</option>`).join("");
+  await loadClips();
+}
+
+async function loadClips() {
+  const d = await (await fetch(`/api/testset?split=${split.value}`)).json();
+  S.clips = d.clips;
+  const cats = [...new Set(S.clips.map(c => c.category))].sort();
+  const keep = category.value;
+  category.innerHTML = `<option value="">every noise type</option>`
+    + cats.map(c => `<option ${c === keep ? "selected" : ""}>${c}</option>`).join("");
+  fillClips();
+}
+
+function fillClips() {
+  const f = category.value;
+  const list = S.clips.filter(c => !f || c.category === f);
+  clip.innerHTML = list.map(c =>
+    `<option value="${c.index}">#${String(c.index).padStart(3, "0")} · `
+    + `${c.category} · ${c.snr_db.toFixed(1)} dB · ${c.language}</option>`).join("")
+    || `<option value="">none</option>`;
+}
+
+// --------------------------------------------------------------- running
+
+function busy(msg) {
+  status.className = "status";
+  status.innerHTML = msg ? `<span class="spin"></span>${msg}` : "";
+}
+function fail(msg) { status.className = "status err"; status.textContent = msg; }
+
+async function analyseTest() {
+  if (!clip.value) return;
+  busy("enhancing…");
+  try {
+    const u = `/api/analyze/test?split=${split.value}&index=${clip.value}`
+      + `&run=${encodeURIComponent(run.value)}`;
+    show(await (await fetch(u)).json());
+  } catch (e) { fail("could not reach the server: " + e); }
+}
+
+// Decode whatever the browser can play, then resample to the 16 kHz mono the
+// model was trained on. Doing this here means the server never needs a codec.
+async function toMono16k(arrayBuffer) {
+  const ac = new (window.AudioContext || window.webkitAudioContext)();
+  const decoded = await ac.decodeAudioData(arrayBuffer);
+  const off = new OfflineAudioContext(
+    1, Math.max(1, Math.ceil(decoded.duration * 16000)), 16000);
+  const src = off.createBufferSource();
+  src.buffer = decoded; src.connect(off.destination); src.start();
+  const out = await off.startRendering();
+  ac.close();
+  return out.getChannelData(0);
+}
+
+async function sendPCM(pcm, source, name) {
+  busy(`enhancing ${(pcm.length / 16000).toFixed(1)} s of audio…`);
+  const u = `/api/analyze/upload?run=${encodeURIComponent(run.value)}`
+    + `&source=${source}&name=${encodeURIComponent(name || "")}`;
+  const r = await fetch(u, {
+    method: "POST",
+    headers: {"Content-Type": "application/octet-stream"},
+    body: pcm.buffer
+  });
+  show(await r.json());
+}
+
+async function analyseUpload() {
+  const f = file.files[0];
+  if (!f) return;
+  busy("decoding…");
+  try {
+    show_pcm_error_guard(await toMono16k(await f.arrayBuffer()), "upload", f.name);
+  } catch (e) { fail("could not decode that file: " + e); }
+}
+async function show_pcm_error_guard(pcm, src, name) {
+  try { await sendPCM(pcm, src, name); }
+  catch (e) { fail("server error: " + e); }
+}
+
+// ----------------------------------------------------------------- mic
+
+let rec = null, chunks = [];
+async function toggleRec() {
+  if (rec && rec.state === "recording") { rec.stop(); return; }
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    recStatus.textContent = "This browser will not give a microphone here "
+      + "(needs https or localhost)."; return;
+  }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({audio: true});
+    chunks = [];
+    rec = new MediaRecorder(stream);
+    rec.ondataavailable = e => chunks.push(e.data);
+    rec.onstop = async () => {
+      stream.getTracks().forEach(t => t.stop());
+      recBtn.classList.remove("live");
+      recBtn.textContent = "● Start recording";
+      recStatus.textContent = "decoding…";
+      try {
+        const blob = new Blob(chunks, {type: chunks[0]?.type || "audio/webm"});
+        const pcm = await toMono16k(await blob.arrayBuffer());
+        recStatus.textContent = `${(pcm.length / 16000).toFixed(1)} s recorded`;
+        await show_pcm_error_guard(pcm, "microphone", "recording");
+      } catch (e) { recStatus.textContent = "could not decode: " + e; }
+    };
+    rec.start();
+    recBtn.classList.add("live");
+    recBtn.textContent = "■ Stop and enhance";
+    recStatus.textContent = "recording…";
+  } catch (e) {
+    recStatus.textContent = "microphone refused: " + e.message;
+  }
+}
+
+// -------------------------------------------------------------- results
+
+const TARGETS = {pesq: 2.5, stoi: 0.85, si_snr: 15};
+const LABEL = {pesq: "PESQ", stoi: "STOI", si_snr: "SNR (SI-SNR)"};
+const DP = {pesq: 3, stoi: 3, si_snr: 2};
+
+function show(d) {
+  if (d.error) return fail(d.error);
+  S.result = d;
+  busy("");
+  results.style.display = "";
+
+  // ---- players
+  const order = [["noisy", "Noisy input", "what the microphone hears"],
+                 ["clean", "Clean reference", "the truth, only for test clips"],
+                 ["enhanced", "Enhanced output", "what the model produced"]];
+  players.innerHTML = order.filter(([k]) => d.audio[k]).map(([k, t, s]) =>
+    `<div class="player"><div class="t">${t}</div><div class="d">${s}</div>
+     <audio controls preload="auto" data-k="${k}" src="${d.audio[k]}"></audio></div>`
+  ).join("");
+  S.audios = {};
+  players.querySelectorAll("audio").forEach(a => {
+    S.audios[a.dataset.k] = a;
+    a.onplay = () => { S.active = a; pumpHead(); pauseOthers(a); };
+  });
+
+  // ---- scores
+  if (d.metrics) {
+    scoreHead.textContent = "3 · What it did to the numbers";
+    scoreNote.innerHTML = "Green is the improvement over the noisy input. The "
+      + "bar shows how far this clip got from the noisy starting point toward "
+      + "the project target.";
+    cards.innerHTML = ["pesq", "stoi", "si_snr"].map(k => {
+      const a = d.metrics.noisy[k], b = d.metrics.enhanced[k],
+            g = d.metrics.gain[k], t = TARGETS[k];
+      if (b === null) return `<div class="card"><div class="k">${LABEL[k]}</div>
+        <div class="v">—</div><div class="s">could not be scored</div></div>`;
+      const p = Math.max(0, Math.min(1, (b - a) / (t - a)));
+      return `<div class="card">
+        <div class="k">${LABEL[k]}</div>
+        <div class="v ${b >= t ? "up" : ""}">${fmt(b, DP[k])}</div>
+        <div class="s">${fmt(a, DP[k])} → target ${t}
+          <b class="${g >= 0 ? "up" : "down"}">${g >= 0 ? "+" : ""}${fmt(g, DP[k])}</b></div>
+        <div class="bar"><i style="width:${(p * 100).toFixed(1)}%;background:${
+          b >= t ? "var(--good)" : "var(--accent)"}"></i></div>
+      </div>`;
+    }).join("");
+  } else {
+    scoreHead.textContent = "3 · No score for this clip";
+    cards.innerHTML = "";
+    scoreNote.innerHTML = "PESQ, STOI and SI-SNR all compare the output against "
+      + "<b>clean speech</b>. Your own audio has no clean version, so there is "
+      + "nothing to compare against and no honest number to report. Use a test "
+      + "set clip to see measured scores.";
+  }
+
+  // ---- spectrograms
+  const blocks = [specBlock("noisy", "Noisy input",
+      "speech buried in whatever else was there")];
+  if (d.spectrograms.clean)
+    blocks.push(specBlock("clean", "Clean reference", "what we are aiming at"));
+  blocks.push(specBlock("enhanced", "Enhanced output",
+      "noisy input with the mask applied"));
+  blocks.push(specBlock("mask", "The mask the model predicted",
+      "bright = keep this, dark = remove it"));
+  specs.innerHTML = blocks.join("")
+    + `<div class="axis"><span>0.00 s</span><span>${d.seconds.toFixed(2)} s</span></div>`;
+
+  drawSpec(document.getElementById("cv-noisy"), d.spectrograms.noisy, d.frames, d.bins, LUT_SPEC);
+  if (d.spectrograms.clean)
+    drawSpec(document.getElementById("cv-clean"), d.spectrograms.clean, d.frames, d.bins, LUT_SPEC);
+  drawSpec(document.getElementById("cv-enhanced"), d.spectrograms.enhanced, d.frames, d.bins, LUT_SPEC);
+  drawSpec(document.getElementById("cv-mask"), d.mask.data, d.mask.frames, d.mask.bins, LUT_MASK);
+
+  specs.querySelectorAll(".specwrap").forEach(w => {
+    w.onclick = e => {
+      const a = S.active || S.audios.enhanced || S.audios.noisy;
+      if (!a) return;
+      const r = w.getBoundingClientRect();
+      a.currentTime = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width))
+        * (a.duration || d.seconds);
+      if (a.paused) a.play();
+    };
+  });
+
+  // ---- aux head
+  if (d.aux) {
+    const truth = d.meta.category;
+    const rows = d.aux.classes.map((c, i) => ({c, p: d.aux.probs[i]}))
+      .sort((a, b) => b.p - a.p);
+    probs.innerHTML = rows.map(r =>
+      `<div class="prob ${r.c === truth ? "true" : ""}">
+         <span class="mono">${r.c}</span>
+         <span class="track"><i class="fill" style="width:${(r.p * 100).toFixed(1)}%;display:block"></i></span>
+         <span class="n">${(r.p * 100).toFixed(0)}%</span>
+       </div>`).join("")
+      + (truth ? `<div class="muted" style="margin-top:8px">Actual noise:
+          <b class="mono">${truth}</b> — the model guessed
+          <b class="mono">${d.aux.predicted}</b>
+          ${d.aux.predicted === truth ? "✓" : "✗"}</div>` : "");
+  } else {
+    probs.innerHTML = `<div class="muted">This checkpoint has no classifier head.</div>`;
+  }
+
+  // ---- timing
+  const t = d.timing, m = d.model;
+  const compute = t.inference_ms * (m.chunk_ms / (t.audio_ms || 1));
+  const total = m.lookahead_ms + m.chunk_ms + compute;
+  timing.innerHTML = `
+    ${tcard("Ran in", `${t.inference_ms.toFixed(1)} ms`,
+            `for ${(t.audio_ms / 1000).toFixed(2)} s of audio`)}
+    ${tcard("Faster than real time", `${t.realtime_factor.toFixed(0)}×`,
+            "on this machine, whole clip at once")}
+    ${tcard("Per 100 ms chunk", `${compute.toFixed(2)} ms`,
+            "what streaming would actually cost")}
+    ${tcard("End-to-end delay", `${total.toFixed(0)} ms`,
+            `${m.lookahead_ms.toFixed(0)} lookahead + ${m.chunk_ms.toFixed(0)} chunk + compute`,
+            total <= 800)}`;
+  timingNote.innerHTML = `The budget for this project is 500–800 ms. `
+    + (total <= 800
+      ? `<b class="up">This fits, with ${(800 - total).toFixed(0)} ms to spare.</b>`
+      : `<b class="down">This exceeds it by ${(total - 800).toFixed(0)} ms.</b>`)
+    + ` The delay is dominated by design choices, not by the GPU: lookahead and `
+    + `chunk size are ${(m.lookahead_ms + m.chunk_ms).toFixed(0)} ms of the total, `
+    + `while the arithmetic is only ${compute.toFixed(2)} ms.`;
+
+  pipeline.innerHTML = diagram(d);
+  results.scrollIntoView({behavior: "smooth", block: "start"});
+}
+
+function tcard(k, v, s, ok) {
+  return `<div class="card"><div class="k">${k}</div>
+    <div class="v ${ok === true ? "up" : ok === false ? "down" : ""}">${v}</div>
+    <div class="s">${s}</div></div>`;
+}
+
+function pauseOthers(keep) {
+  Object.values(S.audios).forEach(a => { if (a !== keep) a.pause(); });
+}
+
+function pumpHead() {
+  const a = S.active;
+  if (!a) return;
+  const frac = a.duration ? a.currentTime / a.duration : 0;
+  document.querySelectorAll(".playhead").forEach(p => {
+    p.style.display = "block";
+    p.style.left = (frac * 100).toFixed(3) + "%";
+  });
+  if (!a.paused && !a.ended) requestAnimationFrame(pumpHead);
+}
+
+function diagram(d) {
+  const m = d.model, hop = m.hop_length, n = m.n_fft;
+  const box = (x, w, t1, t2) =>
+    `<rect x="${x}" y="26" width="${w}" height="44" rx="7"
+       fill="var(--bg)" stroke="var(--line)"/>
+     <text x="${x + w / 2}" y="46" text-anchor="middle" font-size="11.5"
+       font-weight="640" fill="var(--ink)">${t1}</text>
+     <text x="${x + w / 2}" y="61" text-anchor="middle" font-size="10"
+       fill="var(--dim)">${t2}</text>`;
+  const arrow = x => `<path d="M${x} 48 l14 0 m-5 -4 l5 4 l-5 4"
+       stroke="var(--dim)" fill="none" stroke-width="1.3"/>`;
+  const W = [128, 132, 116, 116, 128, 116];
+  let x = 4, parts = "";
+  const items = [
+    ["waveform", `${(d.seconds * 16000) | 0} samples`],
+    ["STFT", `${d.frames} × ${d.bins}`],
+    ["encoder", `${n}-pt, hop ${hop}`],
+    ["LSTM", `${m.lstm_hidden} hidden`],
+    ["decoder → mask", `${d.mask.frames} × ${d.mask.bins}`],
+    ["iSTFT", "back to audio"],
+  ];
+  items.forEach((it, i) => {
+    parts += box(x, W[i], it[0], it[1]);
+    x += W[i];
+    if (i < items.length - 1) { parts += arrow(x + 1); x += 18; }
+  });
+  return `<svg viewBox="0 0 ${x + 6} 92" style="min-width:${x + 6}px;width:100%;height:auto">
+    ${parts}
+    <text x="4" y="86" font-size="10" fill="var(--dim)">
+      the phase from the noisy STFT is carried straight to the iSTFT and never changed —
+      only the magnitude is masked</text>
+  </svg>`;
+}
+
+// ------------------------------------------------------------------ wire
+
+document.querySelectorAll(".tabs button").forEach(b => b.onclick = () => {
+  document.querySelectorAll(".tabs button").forEach(x => x.classList.remove("on"));
+  document.querySelectorAll(".pane").forEach(x => x.classList.remove("on"));
+  b.classList.add("on");
+  document.getElementById("pane-" + b.dataset.pane).classList.add("on");
+});
+split.onchange = loadClips;
+category.onchange = fillClips;
+goTest.onclick = analyseTest;
+file.onchange = () => { goUpload.disabled = !file.files[0]; };
+goUpload.onclick = analyseUpload;
+recBtn.onclick = toggleRec;
+run.onchange = () => { if (S.result) busy(""); };
+
+boot().catch(e => fail("could not load: " + e));
+</script>
+</body>
+</html>
