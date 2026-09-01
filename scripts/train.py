@@ -95,6 +95,29 @@ SPECTRAL_LOSS_WEIGHT = 600.0
 # fifth as much again. 600 is the default because it was best and costs
 # nothing, but there is no further run hiding in this knob.
 
+MASK_LOSS_WEIGHT = 0.0
+# How loudly a fourth grader argues: one that marks the MASK itself against the
+# mask the model should have drawn, rather than judging the audio that came out.
+# WHY IT EXISTS: the mask is the only thing this model produces, and until now
+# nothing ever told it which parts of the mask were wrong -- only that the
+# finished audio was off, leaving it to work backwards. `mask_diagnosis.py`
+# shows the mask correlates with the ideal one at just 0.617 and regresses
+# toward the middle: where the ideal wants 0 it leaves 0.134, where the ideal
+# wants 1 it keeps 0.707. That hedging is optimal under uncertainty and cannot
+# be undone afterwards -- multiplying, powering and contrast-expanding the mask
+# all make things monotonically worse -- so the signal has to change instead.
+# The target is computable during training because the clean speech is on hand:
+# ideal = |clean| / |noisy|, capped at the model's own mask ceiling. It is a
+# teaching aid only and costs nothing at deployment, like the noise classifier.
+# 0.0 is OFF, which reproduces runs 0010-0018. Size it with `--loss-scales`,
+# which reports the gradient each term produces; never by comparing loss values.
+# MEASURED: the weight that makes this term pull as hard as SI-SNR is 112 at
+# random initialisation and 60 on run 0016's trained weights, so 100 sits in
+# that range and is what the first experiment uses. For reference the spectral
+# term's equal-pull weight is ~190 and it runs at 600, i.e. about 3x, so a mask
+# weight of 100 gives this term roughly a third of the spectral term's say.
+# Sensible sweep after the first result: 30 and 300.
+
 SPECTRAL_COMPRESSION = 0.3
 # Power the magnitudes are raised to before comparing. 1.0 means raw power,
 # where one loud vowel outweighs a hundred consonants; LOWER flattens the
@@ -271,6 +294,23 @@ def spectral_loss(est, ref, power=SPECTRAL_COMPRESSION):
     return (est_c - ref_c).pow(2).mean()
 
 
+def ideal_mask(noisy, clean, mask_max):
+    """The mask the model should have drawn, from audio it never sees.
+
+    |clean| / |noisy| per bin, capped at the model's own ceiling so the target
+    is something the architecture can actually produce -- asking a sigmoid
+    bounded at 1.0 to output 1.4 would be teaching it to fail.
+    """
+    mag_n = model_crn.to_spectrogram(noisy).abs()
+    mag_c = model_crn.to_spectrogram(clean).abs()
+    return (mag_c / (mag_n + EPS)).clamp(max=mask_max)
+
+
+def mask_loss(mask, noisy, clean, mask_max):
+    """Squared error between the drawn mask and the ideal one."""
+    return (mask - ideal_mask(noisy, clean, mask_max)).pow(2).mean()
+
+
 def loss_scale_report(model, loader, device, n_batches=4):
     """Print how hard each loss term pulls, so the weight is a measurement.
 
@@ -295,9 +335,11 @@ def loss_scale_report(model, loader, device, n_batches=4):
         if i >= n_batches:
             break
         noisy, clean = noisy.to(device), clean.to(device)
-        est, _, _, _ = model(noisy)
+        est, mask, _, _ = model(noisy)
         terms = {"si_snr": si_snr_loss(est, clean),
-                 "spectral": spectral_loss(est, clean)}
+                 "spectral": spectral_loss(est, clean),
+                 "mask": mask_loss(mask, noisy, clean,
+                                   model.decoder.mask_max)}
         out = {}
         for name, term in terms.items():
             model.zero_grad(set_to_none=True)
@@ -310,13 +352,14 @@ def loss_scale_report(model, loader, device, n_batches=4):
 
     print(f"{'term':<12}{'value':>12}{'grad norm':>14}")
     grads = {}
-    for name in ("si_snr", "spectral"):
+    for name in ("si_snr", "spectral", "mask"):
         v = float(np.mean([r[name][0] for r in rows]))
         g = float(np.mean([r[name][1] for r in rows]))
         grads[name] = g
         print(f"{name:<12}{v:>12.5f}{g:>14.5f}")
-    w = grads["si_snr"] / max(grads["spectral"], EPS)
-    print(f"\nweight that makes them pull equally hard: {w:.1f}")
+    for name in ("spectral", "mask"):
+        w = grads["si_snr"] / max(grads[name], EPS)
+        print(f"weight that makes {name} pull as hard as si_snr: {w:.1f}")
     return grads
 
 
@@ -325,12 +368,15 @@ def loss_scale_report(model, loader, device, n_batches=4):
 # --------------------------------------------------------------------------
 
 def run_epoch(model, loader, device, optimizer=None, aux_weight=AUX_LOSS_WEIGHT,
-              spec_weight=SPECTRAL_LOSS_WEIGHT):
+              spec_weight=SPECTRAL_LOSS_WEIGHT,
+              mask_weight=MASK_LOSS_WEIGHT,
+              compression=SPECTRAL_COMPRESSION):
     """One pass. Trains if an optimizer is given, otherwise evaluates."""
     training = optimizer is not None
     model.train(training)
 
-    totals = {"loss": 0.0, "audio_loss": 0.0, "spec_loss": 0.0, "aux_loss": 0.0,
+    totals = {"loss": 0.0, "audio_loss": 0.0, "spec_loss": 0.0,
+              "mask_loss": 0.0, "aux_loss": 0.0,
               "si_snr": 0.0, "aux_correct": 0.0, "n": 0}
     ce = nn.CrossEntropyLoss()
 
@@ -340,13 +386,18 @@ def run_epoch(model, loader, device, optimizer=None, aux_weight=AUX_LOSS_WEIGHT,
         label = label.to(device, non_blocking=True)
 
         with torch.set_grad_enabled(training):
-            est, _, logits, _ = model(noisy)
+            est, mask, logits, _ = model(noisy)
             audio_loss = si_snr_loss(est, clean)
-            spec_loss = spectral_loss(est, clean) if spec_weight \
-                else torch.zeros((), device=device)
+            spec_loss = (spectral_loss(est, clean, compression)
+                         if spec_weight
+                         else torch.zeros((), device=device))
+            mloss = (mask_loss(mask, noisy, clean, model.decoder.mask_max)
+                     if mask_weight
+                     else torch.zeros((), device=device))
             aux_loss = ce(logits, label) if (logits is not None and aux_weight) \
                 else torch.zeros((), device=device)
-            loss = audio_loss + spec_weight * spec_loss + aux_weight * aux_loss
+            loss = (audio_loss + spec_weight * spec_loss
+                    + mask_weight * mloss + aux_weight * aux_loss)
 
         if training:
             optimizer.zero_grad(set_to_none=True)
@@ -362,6 +413,7 @@ def run_epoch(model, loader, device, optimizer=None, aux_weight=AUX_LOSS_WEIGHT,
         totals["loss"] += loss.detach().item() * n
         totals["audio_loss"] += audio_loss.detach().item() * n
         totals["spec_loss"] += spec_loss.detach().item() * n
+        totals["mask_loss"] += mloss.detach().item() * n
         totals["aux_loss"] += aux_loss.detach().item() * n
         with torch.no_grad():
             totals["si_snr"] += float(si_snr(est, clean).sum())
@@ -372,6 +424,7 @@ def run_epoch(model, loader, device, optimizer=None, aux_weight=AUX_LOSS_WEIGHT,
     return {"loss": totals["loss"] / n,
             "audio_loss": totals["audio_loss"] / n,
             "spec_loss": totals["spec_loss"] / n,
+            "mask_loss": totals["mask_loss"] / n,
             "aux_loss": totals["aux_loss"] / n,
             "si_snr": totals["si_snr"] / n,
             "aux_accuracy": totals["aux_correct"] / n}
@@ -481,6 +534,12 @@ def main():
     ap.add_argument("--spec-weight", type=float, default=SPECTRAL_LOSS_WEIGHT,
                     help="weight on the compressed-magnitude loss; 0 "
                          "reproduces the SI-SNR-only runs up to 0009")
+    ap.add_argument("--compression", type=float,
+                    default=SPECTRAL_COMPRESSION,
+                    help="power the magnitudes are raised to before comparing; lower makes quiet consonants count more")
+    ap.add_argument("--mask-weight", type=float,
+                    default=MASK_LOSS_WEIGHT,
+                    help="weight on the mask-vs-ideal-mask loss; 0 reproduces runs 0010-0018")
     ap.add_argument("--loss-scales", action="store_true",
                     help="print the size of each loss term and exit")
     ap.add_argument("--lstm-hidden", type=int, default=model_crn.LSTM_HIDDEN,
@@ -534,14 +593,14 @@ def main():
     n_params = sum(p.numel() for p in model.parameters())
 
     if args.loss_scales:
-        # Reports the size of each term so the weight can be chosen from a
-        # measurement. With --resume it reports at that run's operating point,
-        # which is the balance that actually matters; without, at random init.
+        # Reports how hard each term pulls, so its weight can be chosen
+        # from a measurement. With --resume it reports at that run's
+        # operating point, which is the balance that actually matters;
+        # without, at random initialisation.
         if args.resume:
-            ck = torch.load(RunLog.open(args.resume).checkpoint_path("best.pt"),
-                            map_location=device, weights_only=False)
-            model.load_state_dict(ck["model"])
-            print(f"loaded {args.resume} best.pt (epoch {ck['epoch']})")
+            model, ck_name, ep = load_run_model(
+                RunLog.open(args.resume), device)
+            print(f"loaded {ck_name} (epoch {ep})")
         loss_scale_report(model, val_loader, device)
         return
 
@@ -560,7 +619,8 @@ def main():
         "learning_rate": args.lr, "weight_decay": WEIGHT_DECAY,
         "optimizer": OPTIMIZER, "aux_loss_weight": args.aux_weight,
         "spectral_loss_weight": args.spec_weight,
-        "spectral_compression": SPECTRAL_COMPRESSION,
+        "mask_loss_weight": args.mask_weight,
+        "spectral_compression": args.compression,
         "grad_clip": GRAD_CLIP, "eval_every": args.eval_every,
         "early_stop_patience": EARLY_STOP_PATIENCE, "seed": args.seed,
         "n_fft": model_crn.N_FFT, "hop_length": model_crn.HOP_LENGTH,
@@ -597,8 +657,9 @@ def main():
         print(f"resumed {run.name} at epoch {start_epoch}")
     else:
         run = RunLog.create(args.arch, config, notes=args.note,
-                            tag_keys=("spectral_loss_weight", "lstm_hidden",
-                                      "data_fraction", "seed"))
+                            tag_keys=("spectral_compression",
+                                      "spectral_loss_weight",
+                                      "lstm_hidden", "seed"))
 
     infer_ms = measure_inference_ms(model, device)
     run.update_config(inference_ms_per_clip=infer_ms,
@@ -625,12 +686,12 @@ def main():
             from itertools import islice
             limited = list(islice(iter(train_loader), args.limit_batches))
             tr = run_epoch(model, limited, device, optimizer, args.aux_weight,
-                           args.spec_weight)
+                           args.spec_weight, args.mask_weight, args.compression)
         else:
             tr = run_epoch(model, train_loader, device, optimizer,
-                           args.aux_weight, args.spec_weight)
+                           args.aux_weight, args.spec_weight, args.mask_weight, args.compression)
         va = run_epoch(model, val_loader, device, None, args.aux_weight,
-                       args.spec_weight)
+                       args.spec_weight, args.mask_weight, args.compression)
         secs = time.perf_counter() - t0
         scheduler.step(va["loss"])
         lr_now = optimizer.param_groups[0]["lr"]
@@ -640,6 +701,8 @@ def main():
                "train_si_snr": tr["si_snr"], "val_si_snr": va["si_snr"],
                "train_spec_loss": tr["spec_loss"],
                "val_spec_loss": va["spec_loss"],
+               "train_mask_loss": tr["mask_loss"],
+               "val_mask_loss": va["mask_loss"],
                "train_aux_loss": tr["aux_loss"], "val_aux_loss": va["aux_loss"],
                "train_aux_accuracy": tr["aux_accuracy"],
                "val_aux_accuracy": va["aux_accuracy"],

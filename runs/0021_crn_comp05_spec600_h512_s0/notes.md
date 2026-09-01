@@ -1,0 +1,1 @@
+SPECTRAL_COMPRESSION sweep, high end. Magnitudes raised to 0.5 instead of 0.3, so the comparison leans back toward raw loudness and loud vowels regain some of their dominance. Paired with the 0.15 run to bracket the current 0.3 on both sides; if 0.3 is already at the optimum both should come out worse, and if the curve is flat then this knob is spent like the spectral weight was.
