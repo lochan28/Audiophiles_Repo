@@ -130,7 +130,21 @@
     background: var(--bg); color: var(--ink); border: 1px solid var(--line);
     border-radius: 6px; padding: 4px 8px; font: inherit; font-size: 12px;
   }
+  button { cursor: pointer; }
   .empty { color: var(--dim); padding: 30px 0; }
+
+  /* The stop switch. Only appears for a run that is actually training. */
+  .stopbar {
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    border: 1px solid var(--line); border-left: 3px solid var(--good);
+    border-radius: 8px; padding: 10px 13px; background: var(--panel);
+    margin-bottom: 14px;
+  }
+  .stopbar.pending { border-left-color: var(--warn); }
+  .stopbar .what { flex: 1; min-width: 180px; font-size: 12.5px; }
+  .stopbar .what b { font-family: ui-monospace, monospace; }
+  button.danger { border-color: #ef4444; color: #ef4444; font-weight: 600; }
+  button.danger:hover { background: #ef4444; color: #fff; }
 
   /* Phone: one column, the run list on top rather than a squeezed sidebar,
      and charts full width so the axis labels stay readable. */
@@ -254,6 +268,7 @@ function renderRunList() {
         <span class="dot" style="background:${on ? c : "var(--line)"}"></span>
         <span class="name">${r.name}</span>
         ${r.running ? '<span class="live" style="font-size:10px">live</span>' : ""}
+        ${r.stop_requested ? '<span class="miss" style="font-size:10px;font-weight:600">stopping</span>' : ""}
       </div>
       <div class="meta">${r.epochs} epochs${r.planned_epochs ? " / " + r.planned_epochs : ""}
         &middot; ${(r.parameters || 0).toLocaleString()} params
@@ -365,6 +380,55 @@ function compareTable() {
     </table></div>
     <div class="muted" style="margin-top:8px">Green is the best value in that column.
     ✓ means the target is met.</div></div>`;
+}
+
+// Stopping is a graceful request, not a kill: the trainer finishes the epoch
+// it is on -- saving its checkpoints and logging its metrics row as usual --
+// and then exits. Nothing is lost, and the run can be resumed from last.pt.
+function stopBar() {
+  const live = SELECTED.map(n => RUNS.find(r => r.name === n))
+    .filter(r => r && !r.stopped_early && (r.running || r.stop_requested));
+  return live.map(r => r.stop_requested
+    ? `<div class="stopbar pending">
+         <span class="what"><b>${r.name}</b> will stop when the current epoch
+         finishes. Checkpoints are already saved.</span>
+         <button onclick="cancelStop('${r.name}')">Keep training</button>
+       </div>`
+    : `<div class="stopbar">
+         <span class="what"><b>${r.name}</b> is training — epoch ${r.epochs}${
+           r.planned_epochs ? " of " + r.planned_epochs : ""}.</span>
+         <button class="danger" onclick="requestStop('${r.name}')">Stop after this epoch</button>
+       </div>`).join("");
+}
+
+async function requestStop(name) {
+  // The prompt doubles as the confirmation -- Cancel here aborts -- and what
+  // is typed lands in the run's config as stopped_early, so a run that ended
+  // at 34 of 80 epochs says why without anyone having to remember.
+  const reason = prompt(
+    `Stop ${name} after the current epoch?\n\n`
+    + `Why? (optional, recorded in the run's config)`, "curves plateaued");
+  if (reason === null) return;
+  await post(`/api/stop?run=${encodeURIComponent(name)}`, { reason });
+}
+
+async function cancelStop(name) {
+  await post(`/api/stop/cancel?run=${encodeURIComponent(name)}`);
+}
+
+async function post(url, body) {
+  try {
+    const r = await fetch(url, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body || {})
+    });
+    const d = await r.json();
+    if (d.error) { alert("Could not do that: " + d.error); return; }
+  } catch (e) {
+    alert("Could not reach the dashboard server: " + e);
+    return;
+  }
+  await refresh(true);
 }
 
 function legend() {
@@ -480,6 +544,7 @@ async function renderMain() {
   }
   const change = await changePanel();
   m.innerHTML = `
+    ${stopBar()}
     ${summaryCards()}
     <h2>Training curves</h2>
     ${legend()}
@@ -527,7 +592,9 @@ function overfitPanel() {
 
 // -------------------------------------------------------------------- poll
 
-async function refresh() {
+let LAST_SIG = "";
+
+async function refresh(force = false) {
   // Re-rendering replaces the whole panel, which would throw away the scroll
   // position and cut off any audio being played. Neither is acceptable in a
   // page that refreshes itself every few seconds while you are using it.
@@ -542,6 +609,17 @@ async function refresh() {
   document.getElementById("tick").textContent =
     "updated " + new Date().toLocaleTimeString();
   if (!SELECTED.length && RUNS.length) SELECTED = [RUNS[0].name];
+
+  // An epoch takes far longer than the poll interval, so most polls find
+  // nothing new. Rebuilding the DOM anyway is not harmless: it destroys and
+  // recreates every control, so a button can vanish from under the pointer
+  // mid-press. Only redraw when something actually moved.
+  const sig = JSON.stringify(RUNS.map(r =>
+    [r.name, r.epochs, r.running, r.stop_requested, r.stopped_early]))
+    + JSON.stringify(SELECTED);
+  if (sig === LAST_SIG && !force) return;
+  LAST_SIG = sig;
+
   await Promise.all(SELECTED.map(loadRun));
   renderRunList(); await renderMain();
   window.scrollTo(0, keepScroll);

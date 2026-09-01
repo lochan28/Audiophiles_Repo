@@ -47,6 +47,7 @@ NOTES_NAME = "notes.md"
 CHECKPOINT_DIR = "checkpoints"
 SAMPLE_DIR = "samples"
 SOURCE_DIR = "source"
+STOP_NAME = "STOP"          # asks a running trainer to finish early; see below
 
 # Copied into every run. Comparing two runs then means diffing two snapshots
 # rather than trusting that the working tree has not moved since -- which it
@@ -179,7 +180,50 @@ class RunLog:
         self.metrics_path = os.path.join(path, METRICS_NAME)
         self.checkpoints = os.path.join(path, CHECKPOINT_DIR)
         self.samples = os.path.join(path, SAMPLE_DIR)
+        self.stop_path = os.path.join(path, STOP_NAME)
         self.name = os.path.basename(path)
+
+    # --------------------------------------------------------- stop request
+    #
+    # Asking a run to stop is done by dropping a file in its directory, not by
+    # signalling or killing the process. That keeps the same one-way rule as
+    # everything else here -- training writes files, other tools read them --
+    # so the dashboard never needs a process id, never has to survive a
+    # restart to stay in control, and cannot half-kill a run mid-checkpoint.
+    #
+    # The trainer looks for this at the end of an epoch, once the checkpoints
+    # and the metrics row for that epoch are already on disk, so stopping
+    # this way costs nothing at all: the run ends exactly as it would have
+    # ended had that been its last planned epoch.
+
+    def request_stop(self, reason=""):
+        """Ask a running trainer to finish after the epoch it is on."""
+        with open(self.stop_path, "w", encoding="utf-8") as f:
+            f.write(json.dumps({
+                "requested": datetime.datetime.now().isoformat(timespec="seconds"),
+                "reason": reason,
+            }, indent=2))
+
+    def stop_requested(self):
+        return os.path.exists(self.stop_path)
+
+    def stop_request(self):
+        """The details of a pending stop, or None."""
+        if not self.stop_requested():
+            return None
+        try:
+            with open(self.stop_path, encoding="utf-8") as f:
+                return json.load(f)
+        except (OSError, json.JSONDecodeError):
+            return {}
+
+    def clear_stop(self):
+        """Remove a stop request, so the run directory can be resumed."""
+        try:
+            os.remove(self.stop_path)
+            return True
+        except FileNotFoundError:
+            return False
 
     # ------------------------------------------------------------ creating
 

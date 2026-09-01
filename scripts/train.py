@@ -534,6 +534,9 @@ def main():
     ap.add_argument("--spec-weight", type=float, default=SPECTRAL_LOSS_WEIGHT,
                     help="weight on the compressed-magnitude loss; 0 "
                          "reproduces the SI-SNR-only runs up to 0009")
+    ap.add_argument("--lookahead", type=int,
+                    default=model_crn.LOOKAHEAD_FRAMES,
+                    help="frames of the future the encoder may see; 10 ms each, hard cap 10 (2 per encoder layer)")
     ap.add_argument("--compression", type=float,
                     default=SPECTRAL_COMPRESSION,
                     help="power the magnitudes are raised to before comparing; lower makes quiet consonants count more")
@@ -589,7 +592,8 @@ def main():
                      for c in model_crn.ENCODER_CHANNELS)
     model = ARCHITECTURES[args.arch](mask_max=args.mask_max,
                                      encoder_channels=channels,
-                                     lstm_hidden=args.lstm_hidden).to(device)
+                                     lstm_hidden=args.lstm_hidden,
+                                     lookahead_frames=args.lookahead).to(device)
     n_params = sum(p.numel() for p in model.parameters())
 
     if args.loss_scales:
@@ -624,7 +628,7 @@ def main():
         "grad_clip": GRAD_CLIP, "eval_every": args.eval_every,
         "early_stop_patience": EARLY_STOP_PATIENCE, "seed": args.seed,
         "n_fft": model_crn.N_FFT, "hop_length": model_crn.HOP_LENGTH,
-        "lookahead_frames": model_crn.LOOKAHEAD_FRAMES,
+        "lookahead_frames": args.lookahead,
         # From the arguments, not the module constants: these can be
         # overridden per run and the record has to say what actually ran.
         "lstm_hidden": args.lstm_hidden,
@@ -639,7 +643,7 @@ def main():
         "parameters": n_params, "device": str(device),
         "train_clips": len(train_set), "val_clips": len(val_set),
         "classes": classes,
-        "lookahead_ms": model_crn.TOTAL_LOOKAHEAD_MS,
+        "lookahead_ms": model_crn.STFT_LOOKAHEAD_MS + args.lookahead * 10.0,
         "chunk_ms": model_crn.CHUNK_SAMPLES / SAMPLE_RATE * 1000,
     }
 
@@ -659,11 +663,11 @@ def main():
         run = RunLog.create(args.arch, config, notes=args.note,
                             tag_keys=("spectral_compression",
                                       "spectral_loss_weight",
-                                      "lstm_hidden", "seed"))
+                                      "lookahead_frames", "seed"))
 
     infer_ms = measure_inference_ms(model, device)
     run.update_config(inference_ms_per_clip=infer_ms,
-                      total_latency_ms=model_crn.TOTAL_LOOKAHEAD_MS
+                      total_latency_ms=config["lookahead_ms"]
                       + config["chunk_ms"]
                       + infer_ms * config["chunk_ms"] / 3000.0)
 
@@ -673,12 +677,29 @@ def main():
     print(f"architecture  {args.arch}, {n_params:,} parameters on {device}")
     print(f"data          {len(train_set)} train (fresh mixtures), "
           f"{len(val_set)} validation (frozen)")
-    print(f"latency       {model_crn.TOTAL_LOOKAHEAD_MS:.0f} ms lookahead + "
+    print(f"latency       {config['lookahead_ms']:.0f} ms lookahead + "
           f"100 ms chunk + {infer_ms * 100 / 3000:.2f} ms compute")
     print(f"samples       clips {sample_idx} tracked every {args.eval_every} "
           f"epochs\n")
     print(f"{'ep':>4} {'train':>9} {'val':>9} {'si-snr':>8} {'aux':>6} "
           f"{'lr':>9} {'sec':>6}")
+
+    # A run that ends short should say why in its own config, so a later
+    # reader does not have to guess whether 34 of 80 epochs means "stopped by
+    # hand", "early stopping fired" or "it crashed".
+    stopped_early = None
+    last_epoch = start_epoch - 1
+
+    # Clear a stop left over from a previous run of this directory, otherwise
+    # resuming would halt again immediately for a reason nobody remembers.
+    if run.stop_requested():
+        run.clear_stop()
+
+    # Blank while training, filled in when the loop ends. The dashboard reads
+    # this to tell "still going" from "already finished": looks_running() is a
+    # wall-clock heuristic and stays true for minutes after a run has actually
+    # stopped, which would otherwise leave a live Stop button on a dead run.
+    run.update_config(stopped_early=None, epochs_completed=None)
 
     for epoch in range(start_epoch, args.epochs + 1):
         t0 = time.perf_counter()
@@ -766,12 +787,32 @@ def main():
                     "best_val": best_val, "best_pesq": best_pesq},
                    run.checkpoint_path("last.pt"))
         run.log(**row)
+        last_epoch = epoch
 
+        # Asked to stop from the dashboard. This is checked here, at the very
+        # end of the epoch, because best.pt, best_pesq.pt, last.pt and this
+        # epoch's metrics row are all already on disk by this point -- so
+        # stopping costs nothing. The run ends in exactly the state it would
+        # have been in had this been its last planned epoch, and it can still
+        # be resumed later from last.pt.
+        if run.stop_requested():
+            req = run.stop_request() or {}
+            why = req.get("reason") or ""
+            print(f"\nstopping: requested from the dashboard"
+                  + (f" -- {why}" if why else ""))
+            stopped_early = "manual stop from the dashboard" \
+                + (f": {why}" if why else "")
+            run.clear_stop()
+            break
 
         if EARLY_STOP_PATIENCE and patience >= EARLY_STOP_PATIENCE:
             print(f"\nstopping: validation loss has not improved for "
                   f"{patience} epochs")
+            stopped_early = (f"early stopping: validation loss flat for "
+                             f"{patience} epochs")
             break
+
+    run.update_config(epochs_completed=last_epoch, stopped_early=stopped_early)
 
     print(f"\nbest validation loss {best_val:.4f}")
     print(f"run saved to runs/{run.name}/")

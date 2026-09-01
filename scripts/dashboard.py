@@ -12,6 +12,12 @@ connection to the training process and nothing to start in a particular
 order -- training writes files, this reads them. Kill either one and the other
 carries on.
 
+The one thing that travels the other way is the stop switch. Pressing "stop"
+on a live run writes a STOP file into that run's directory; the trainer reads
+it at the end of its current epoch and finishes early. That is still only
+files -- the dashboard never learns a process id and never signals anything --
+so the two halves stay as independent as before. See RunLog.request_stop.
+
 Standard library only: no Flask, no CDN, no build step. The page draws its own
 charts as inline SVG, so it works with no network at all.
 
@@ -81,6 +87,8 @@ def run_summary(name):
         "last": last,
         "best": best,
         "running": run.looks_running(),
+        "stop_requested": run.stop_requested(),
+        "stopped_early": cfg.get("stopped_early"),
     }
 
 
@@ -185,6 +193,58 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_file(path)
 
         self.send_json({"error": f"no route {route}"}, 404)
+
+    # ---------------------------------------------------------------- post
+    #
+    # The only routes that change anything. They cannot delete, overwrite or
+    # start a run -- the most they can do is ask a trainer that is already
+    # running to finish after its current epoch, or take that request back.
+
+    def do_POST(self):
+        parsed = urlparse(self.path)
+        route = unquote(parsed.path)
+        q = parse_qs(parsed.query)
+        body = self.read_body()     # must drain: keep-alive depends on it
+
+        if route in ("/api/stop", "/api/stop/cancel"):
+            name = q.get("run", [None])[0]
+            if not self._safe(name):
+                return self.send_json({"error": "bad name"}, 400)
+            path = os.path.join(RUNS_DIR, name)
+            if not os.path.isdir(path):
+                return self.send_json({"error": f"no such run: {name}"}, 404)
+
+            run = RunLog(path)
+            if route == "/api/stop":
+                run.request_stop(str(body.get("reason", ""))[:200])
+                return self.send_json({"ok": True, "run": name,
+                                       "stop_requested": True,
+                                       "request": run.stop_request()})
+            run.clear_stop()
+            return self.send_json({"ok": True, "run": name,
+                                   "stop_requested": False})
+
+        self.send_json({"error": f"no route {route}"}, 404)
+
+    def read_body(self):
+        """Read and discard-or-parse the request body.
+
+        Always called, even where the body is not wanted: with HTTP/1.1 an
+        unread body stays in the socket and corrupts the next request on that
+        connection.
+        """
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            return {}
+        if n <= 0:
+            return {}
+        raw = self.rfile.read(min(n, 64 * 1024))
+        try:
+            data = json.loads(raw.decode("utf-8"))
+            return data if isinstance(data, dict) else {}
+        except (ValueError, UnicodeDecodeError):
+            return {}
 
     @staticmethod
     def _safe(name):
