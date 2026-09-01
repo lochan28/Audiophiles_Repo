@@ -1,0 +1,90 @@
+{
+  "arch": "crn",
+  "aux_loss_weight": 0.2,
+  "batch_size": 16,
+  "changed_from": "0023_crn_comp03_spec600_la10_s0",
+  "changes": {
+    "epochs": {
+      "from": 150,
+      "to": 100
+    },
+    "inference_ms_per_clip": {
+      "from": 17.152750000059314,
+      "to": null
+    },
+    "lookahead_frames": {
+      "from": 10,
+      "to": 4
+    },
+    "lookahead_ms": {
+      "from": 116.0,
+      "to": 56.0
+    },
+    "total_latency_ms": {
+      "from": 216.5717583333353,
+      "to": null
+    }
+  },
+  "channel_scale": 1.5,
+  "chunk_ms": 100.0,
+  "classes": [
+    "ambient",
+    "assault_rifle",
+    "engine",
+    "heavy_artillery",
+    "helicopter",
+    "mortar",
+    "rocket"
+  ],
+  "data_fraction": 1.0,
+  "device": "cuda",
+  "early_stop_patience": 0,
+  "encoder_channels": [
+    24,
+    48,
+    96,
+    192,
+    192
+  ],
+  "encoder_freq_strides": [
+    2,
+    2,
+    2,
+    2,
+    2
+  ],
+  "epochs": 100,
+  "epochs_completed": 100,
+  "eval_every": 5,
+  "git_commit": "4e0d25b-dirty",
+  "grad_clip": 5.0,
+  "hop_length": 160,
+  "inference_ms_per_clip": 34.52893000066979,
+  "learning_rate": 0.0003,
+  "lookahead_frames": 4,
+  "lookahead_ms": 56.0,
+  "lstm_bands": 9,
+  "lstm_hidden": 512,
+  "lstm_layers": 2,
+  "mask_loss_weight": 0.0,
+  "mask_max": 1.0,
+  "n_fft": 512,
+  "optimizer": "adamw",
+  "parameters": 9264512,
+  "run_name": "0024_crn_comp03_spec600_la4_s0",
+  "seed": 0,
+  "sequence": 24,
+  "source_changed": {
+    "runlog.py": "+44 -0",
+    "train.py": "+38 -1"
+  },
+  "spectral_compression": 0.3,
+  "spectral_loss_weight": 600.0,
+  "started": "2026-09-01T19:56:40",
+  "steps_per_epoch": 80,
+  "stopped_early": null,
+  "total_latency_ms": 157.15096433335566,
+  "train_clips": 1292,
+  "val_clips": 143,
+  "weight_decay": 0.01
+}
