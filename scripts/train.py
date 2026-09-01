@@ -120,7 +120,19 @@ EARLY_STOP_PATIENCE = 0
 # budget for every run removes the confound.
 
 SEED = 0
-# Fixed so two runs with the same settings are comparable.
+# Starting point for the random number generators.
+#
+# IT DOES NOT MAKE RUNS REPRODUCIBLE. This was assumed for sixteen runs and is
+# false: runs 0014 and 0016 share a configuration and this seed, and diverge at
+# epoch 1 (training loss 25.1153 against 25.6876) and by 0.029 PESQ over epochs
+# 45-80. cuDNN's LSTM backward is nondeterministic and `torch.manual_seed` does
+# not contain it.
+#
+# The consequence is a methodological one. A within-run standard deviation
+# across evaluations is 0.005 to 0.010 PESQ, but that measures evaluation
+# wobble, NOT how much two runs of the same settings differ. Comparing two
+# single runs against the within-run figure will call noise a result. Use
+# `--seed` to repeat a configuration and compare distributions instead.
 
 STEPS_PER_EPOCH = 80
 # Batches per epoch, held FIXED regardless of how much data is in use. This
@@ -473,6 +485,9 @@ def main():
                     help="print the size of each loss term and exit")
     ap.add_argument("--lstm-hidden", type=int, default=model_crn.LSTM_HIDDEN,
                     help="width of the memory stage")
+    ap.add_argument("--seed", type=int, default=SEED,
+                    help="repeat a configuration under a different seed, to "
+                         "measure how much two identical runs differ")
     ap.add_argument("--channel-scale", type=float, default=1.0,
                     help="multiply every encoder layer's width by this; 1.5 "
                          "reproduces the capacity of run 0002")
@@ -489,8 +504,8 @@ def main():
                     help="stop each epoch after N batches (smoke testing)")
     args = ap.parse_args()
 
-    torch.manual_seed(SEED)
-    np.random.seed(SEED)
+    torch.manual_seed(args.seed)
+    np.random.seed(args.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     train_set = SpeechNoiseMixtures("train")            # fresh noise each epoch
@@ -547,7 +562,7 @@ def main():
         "spectral_loss_weight": args.spec_weight,
         "spectral_compression": SPECTRAL_COMPRESSION,
         "grad_clip": GRAD_CLIP, "eval_every": args.eval_every,
-        "early_stop_patience": EARLY_STOP_PATIENCE, "seed": SEED,
+        "early_stop_patience": EARLY_STOP_PATIENCE, "seed": args.seed,
         "n_fft": model_crn.N_FFT, "hop_length": model_crn.HOP_LENGTH,
         "lookahead_frames": model_crn.LOOKAHEAD_FRAMES,
         # From the arguments, not the module constants: these can be
@@ -583,7 +598,7 @@ def main():
     else:
         run = RunLog.create(args.arch, config, notes=args.note,
                             tag_keys=("spectral_loss_weight", "lstm_hidden",
-                                      "data_fraction"))
+                                      "data_fraction", "seed"))
 
     infer_ms = measure_inference_ms(model, device)
     run.update_config(inference_ms_per_clip=infer_ms,

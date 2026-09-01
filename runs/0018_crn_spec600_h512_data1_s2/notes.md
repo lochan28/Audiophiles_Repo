@@ -1,0 +1,1 @@
+Seed 2 of a three-way replicate. See the note on seed 1. Run 0016 (seed 0) is the third sample: same configuration, same 150 epochs, so the three together give a standard deviation across identical runs.

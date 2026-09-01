@@ -16,11 +16,16 @@ just changed.
 
     THE MODEL IS COMPLETE.
     Training, evaluation and the dashboard are built and running.
-    Ten runs done; the objective has just been fixed (run 0010).
+    18 runs done. Best is 0016: PESQ 1.857, STOI 0.854, SI-SNR 11.86.
+    STOI clears its target; PESQ is the one still short (2.5).
 
-    Next: sweep the spectral loss weight, then test whether the
-    encoder's 257-to-9-band squeeze can even represent the mask
-    it needs.                                          <-- WE ARE HERE
+    Settled since: the objective was the ceiling, not the
+    architecture. Phase, mask ceiling, LSTM resolution and mask
+    post-processing are all measured dead ends. Capacity and data
+    volume are real but small. PESQ is too noisy to compare runs
+    with -- use STOI.
+
+    Next: train the mask against the ideal mask directly.  <-- WE ARE HERE
 ```
 
 Everything is in `scripts/model_crn.py`, 3,018,072 parameters, running on the
@@ -315,25 +320,37 @@ model, well inside 8 GB.
 
 ## Results so far -- the ceiling was the objective, not the architecture
 
-Ten runs. Full detail in `PROJECT_CONTEXT_4.md` Section 18. Scores are the mean
-of every evaluation from epoch 45 on, with its standard deviation -- **not** a
-run's best score, which grows with the number of evaluations and once misled
-this project badly.
+Eighteen runs. Full detail in `PROJECT_CONTEXT_4.md` Sections 18-20.
+
+**Read scores on STOI, not PESQ.** Training is not reproducible -- two runs
+with the same settings AND the same seed differ by 0.029 PESQ, because cuDNN's
+LSTM backward is nondeterministic. Three identical runs measured the cost:
 
 ```
-run    tested                    PESQ           STOI   SI-SNR
-0002   3x capacity, 9.3M         1.674 +-0.012  0.842   11.69
-0003   quarter of the data       1.652 +-0.017  0.838   11.64
-0005   all the data              1.670 +-0.020  0.839   11.54
-0007   mask 2.0, aux off         1.691 +-0.017  0.842   11.67
-0008   aux classifier off        1.671 +-0.024  0.839   11.59
-0009   baseline, 110 epochs      1.682 +-0.011  0.840   11.57
-0010   compressed-mag loss       1.784 +-0.006  0.845   11.59
+metric   sd across identical runs   relative
+PESQ     0.0124                     0.67%
+STOI     0.0004                     0.05%
+SI-SNR   0.03                       0.25%
 ```
 
-Runs 0001-0009 span 0.039 PESQ against a within-run wobble of 0.011-0.024, so
-**nothing tried in that whole series -- capacity, data, mask ceiling, auxiliary
-weight -- beat its own noise.**
+PESQ is 13x noisier. Nearly every result here is around 0.02 PESQ -- one sigma,
+uncallable -- while the same comparison on STOI is decisive. Report PESQ
+against the 2.5 target; decide on STOI.
+
+```
+run    tested                    PESQ           STOI    SI-SNR
+0009   baseline, SI-SNR only     1.682 +-0.011  0.8398   11.57
+0010   compressed-mag loss 200   1.784 +-0.006  0.8449   11.59
+0011   compressed-mag loss 600   1.799 +-0.007  0.8471   11.66
+0013   LSTM sees 33 bands        1.784 +-0.012  0.8424   11.35
+0014   capacity 9.3M             1.818 +-0.009  0.8496   11.64
+0015   quarter of the data       1.778 +-0.017  0.8437   11.44
+0016   9.3M, 150 epochs          1.857 +-0.006  0.8543   11.86
+```
+
+Run 0016 is the best model and **clears the 0.850 STOI target**, the first of
+the three to be met. Its peak was 1.865 at epoch 135; the curve is flat from
+110.
 
 ### What the cheating test showed
 
@@ -375,22 +392,52 @@ SI-SNR   11.572 +-0.096   ->  11.588 +-0.025       unchanged
 9.4x the control's standard deviation, ranges not overlapping, and no SI-SNR
 surrendered to get it. First real effect in ten runs.
 
-Next, cheapest first: sweep the spectral weight (50 and 600 around 200), sweep
-`SPECTRAL_COMPRESSION` (0.15 and 0.5 around 0.3), then push the ideal mask
-through the encoder's 257-to-9-band squeeze and score it, to find out whether
-the architecture can even represent the detail it needs.
+That held up: on STOI it is a 13-sigma effect, by far the largest thing
+measured in this project.
+
+### What came after, and what is left
+
+**The spectral weight knob is spent.** Off 1.682, w50 1.780, w200 1.784, w600
+1.799. Almost all of the gain is from having the term at all.
+
+**Mask resolution: a good hypothesis, and wrong.** `mask_resolution.py` blurs
+the ideal mask and scores it -- a two-bin blur costs 0.90 of the 2.13 PESQ
+available, and harmonics sit 3-8 bins apart while the LSTM saw 9 bands of ~29
+bins each. So run 0013 gave the LSTM 33 bands, and it was WORSE (STOI 8.4 sigma
+down), fitting even the training data worse despite 2.3x the parameters. The
+skip connections already carry full 257-band detail to the decoder, so the
+model could always draw a sharp mask.
+
+**The mask is sharp and in the wrong places.** It correlates with the ideal
+mask at only 0.617 and sits 0.198 away on a 0-to-1 dial, while being just 1.77x
+smoother. An ideal mask blurred to the model's own roughness still scores 2.62
+against the model's 1.68. The error is a regression toward the middle -- where
+the ideal wants 0 the model leaves 0.134, where it wants 1 it keeps 0.707 --
+and multiplying, powering or contrast-expanding the mask all make things
+monotonically worse. It is a model correctly averaging over what it does not
+know.
+
+**Deploy `best_pesq.pt`, not `best.pt`.** The latter is chosen by validation
+loss, which on run 0014 landed on epoch 26 at PESQ 1.703 while the best epoch
+was 65 at 1.832.
+
+**Next: train the mask against the ideal mask directly.** The model is only
+ever told its audio was wrong, never shown the mask it should have drawn --
+though the mask is the only thing it makes. That is the one kind of change that
+has ever worked here.
 
 ## Tuning ideas, from measurement rather than guesswork
 
 An epoch takes **11.3 seconds** (9.2 s GPU, 0.7 s data) and an evaluation
 about 12 more. 40 epochs is under 9 minutes; 150 is about half an hour.
 
-- **Set `EPOCHS` to a fixed budget of 80 and leave early stopping off.** This
+- **Set `EPOCHS` to a fixed budget of 150 and leave early stopping off.** This
   advice originally said to rely on early stopping at 12 epochs of patience.
   That was withdrawn: it watched validation *loss* while results are judged on
   PESQ, and the two diverge, so runs stopped at different points and training
   length became a hidden variable in comparisons meant to isolate one thing.
-  Models converge by roughly epoch 45; 80 leaves a comfortable margin.
+  Models converge by roughly epoch 110 at 9.3M parameters and the curve is
+  flat after that, so 150 leaves a margin and nothing hides beyond it.
 - **Run many experiments.** A dozen configurations is an afternoon. This is
   why the comparison dashboard earns its place.
 - **Raise `BATCH_SIZE` to 32 or 48.** Only 1.62 GB of 8 GB is in use and the

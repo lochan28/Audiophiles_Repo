@@ -149,34 +149,61 @@ against a clean one and read the difference as an architecture result.
 
 ## Results so far -- READ THIS BEFORE SUGGESTING FIXES
 
-Ten runs, detail in `PROJECT_CONTEXT_4.md` Section 18. Compare runs on the
-**mean of evaluations from epoch 45 on, with its standard deviation** -- never
-on a run's best score. PESQ wobbles +-0.02 when converged, so best-of-N grows
-with N and a longer run wins without being better. That error was made here and
-produced a wrong conclusion.
+Eighteen runs, detail in `PROJECT_CONTEXT_4.md` Sections 18-20.
+
+### RULE 1: do not compare runs on PESQ. Compare them on STOI.
+
+Training is NOT reproducible. Runs 0014 and 0016 share a configuration AND a
+seed, yet diverge at epoch 1 and by 0.029 PESQ over epochs 45-80. cuDNN's LSTM
+backward is nondeterministic and `torch.manual_seed` does not contain it.
+
+Three identical runs (0016, 0017, 0018, seeds 0/1/2) measured the cost:
 
 ```
-0002  3x capacity 9.3M        PESQ 1.674 +- 0.012   STOI 0.842   SI-SNR 11.69
-0003  quarter of the data     PESQ 1.652 +- 0.017   STOI 0.838   SI-SNR 11.64
-0005  all the data            PESQ 1.670 +- 0.020   STOI 0.839   SI-SNR 11.54
-0007  mask 2.0, aux off       PESQ 1.691 +- 0.017   STOI 0.842   SI-SNR 11.67
-0008  aux off                 PESQ 1.671 +- 0.024   STOI 0.839   SI-SNR 11.59
-0009  baseline, 110 epochs    PESQ 1.682 +- 0.011   STOI 0.840   SI-SNR 11.57
-0010  compressed-mag loss     PESQ 1.784 +- 0.006   STOI 0.845   SI-SNR 11.59
+metric   mean      sd across identical runs   relative
+PESQ     1.8584    0.0124                     0.67%
+STOI     0.8544    0.0004                     0.05%
+SI-SNR   11.84     0.03                       0.25%
+```
+
+**PESQ is 13x noisier than STOI in relative terms.** Nearly every result in
+this project is around 0.02 PESQ, which is about one sigma and cannot be
+called. The same comparisons on STOI resolve effects a tenth that size.
+
+The within-run sd across evaluations is 0.005-0.010 PESQ. That is EVALUATION
+WOBBLE, not run-to-run variation. Earlier versions of this file quoted it as
+the noise floor for comparing runs; that understates the real floor 3-6x.
+
+So: **report PESQ against the 2.5 target, decide on STOI.** They have agreed in
+sign on every comparison made here. Single runs are sufficient on STOI;
+replicates are only needed for questions that can only be answered on PESQ.
+
+### RULE 2: load `best_pesq.pt`, never `best.pt`
+
+`best.pt` is chosen by validation LOSS, which diverges from PESQ. On run 0014
+best-loss was epoch 26 at PESQ 1.703 while best-PESQ was epoch 65 at 1.832.
+`train.py` writes `best_pesq.pt` and `load_run_model` prefers it. Runs before
+0016 have none and fall back to `last.pt`.
+
+Build models with `train.build_from_config`, which reads every shape from the
+run's own config. Do not construct from module defaults -- old runs will get
+the wrong shapes silently once a default moves.
+
+### The best model, and the ceiling
+
+Run 0016: 9.3M parameters, 150 epochs, compressed-magnitude loss at 600.
+
+```
+PESQ    1.857 +- 0.006 converged, 1.865 peak
+STOI    0.8543     <- clears its 0.850 target, first of three met
+SI-SNR  11.86
 ```
 
 Noisy baseline: PESQ 1.199, STOI 0.745, SI-SNR +4.5 dB.
-Targets: 2.5, 0.85, 15 dB. None met yet.
-
-**Runs 0001-0009 span 0.039 PESQ against a within-run noise of 0.011-0.024.**
-Nothing tried in that series -- capacity, data volume, mask ceiling, auxiliary
-weight -- produced an effect distinguishable from noise. Do NOT propose a
-bigger model or more data collection; both are tested dead ends.
-
-### The ceiling is known, because it was measured
+Targets: 2.5, 0.85, 15 dB.
 
 `scripts/oracle_ceiling.py` builds the best possible mask from the clean speech
-and scores it. No training involved. On the frozen validation set:
+and scores it -- no training. On the frozen validation set:
 
 ```
 noisy input                            PESQ 1.189  STOI 0.745  SI-SNR  4.46
@@ -186,42 +213,78 @@ noisy magnitude + clean phase          PESQ 1.289  STOI 0.807  SI-SNR  8.59
 clean magnitude + clean phase          PESQ 4.644  STOI 1.000  (sanity check)
 ```
 
-**Do NOT propose DCCRN, complex masks, or any phase-related fix.** Keeping the
-noisy phase, the ideal mask still reaches 3.31, well past the 2.5 target.
-Fixing phase alone is worth +0.10. This document previously claimed noisy-phase
-reuse was the ceiling; that claim was wrong and is withdrawn.
+### Things NOT to propose, each killed by measurement
 
-**Do NOT propose raising `MASK_MAX`.** Uncapping the *perfect* mask is worth
-+0.08. Runs 0006 and 0007 were measuring nothing.
+**DCCRN, complex masks, any phase fix.** Keeping the noisy phase, the ideal
+mask still reaches 3.31, past the 2.5 target. Fixing phase alone is worth
++0.10. This file once claimed phase reuse was the ceiling; withdrawn.
 
-The actual problem was a loss/metric mismatch. Run 0009 captured 73% of the
-achievable SI-SNR but only 23% of the achievable PESQ, because SI-SNR was the
-loss. Run 0010 added a compressed-magnitude spectral term (power 0.3) and
-gained +0.102 PESQ over 0009 -- 9.4x the control's own standard deviation,
-with non-overlapping ranges and no SI-SNR given up. First real effect in ten
-runs.
+**Raising `MASK_MAX`.** Uncapping a PERFECT mask is worth +0.08.
 
-Weight it by MEASUREMENT, not by loss values: their ratio swings from 8 to 451
-across a run. `python scripts/train.py --loss-scales` backpropagates each term
-alone and reports the gradient each produces. Equal pull is 381 at init, 187
-trained; the default 200 sits in that range.
+**A finer view for the LSTM.** `mask_resolution.py` shows the ideal mask needs
+fine detail -- a two-bin blur costs 0.90 PESQ -- and harmonics sit 3-8 bins
+apart while the LSTM saw 9 bands of ~29 bins. Compelling, and wrong: run 0013
+gave the LSTM 33 bands and was WORSE (STOI -0.0047, 8.4 sigma), fitting even
+the training data worse despite 2.3x the parameters. The SKIP CONNECTIONS
+already carry full 257-band detail to the decoder, so the model could always
+draw a sharp mask.
 
-The aux noise classifier reaches 0.52-0.59 against 0.143 chance, so it learns.
-It does not HELP: run 0008 with it off scored 1.671 +- 0.024 against run 0005's
-1.670 +- 0.020. Identical.
+**Post-processing the mask.** Multiplying it, raising it to a power, and
+expanding its contrast all make PESQ monotonically worse.
 
-### Next, cheapest first
+**The auxiliary classifier.** It learns (0.52-0.59 against 0.143 chance) but
+does not help: run 0008 with it off matched run 0005 with it on.
 
-1. Sweep the spectral weight: 50 and 600 around the current 200.
-2. Sweep `SPECTRAL_COMPRESSION`: 0.15 and 0.5 around 0.3.
-3. Push the *ideal* mask through the encoder's downsample-and-upsample path
-   and score it. The encoder squeezes 257 bands to 9; whatever that loses is
-   detail no amount of training can recover. No training needed.
+### What IS established
 
-An epoch is 11.3 s; an 80-epoch run is about 25 minutes. `EARLY_STOP_PATIENCE`
-is 0 on purpose -- it watched validation loss while results are judged on PESQ,
-making training length a hidden variable. Settle questions with experiments,
-not argument.
+```
+comparison                  dPESQ  sigma    dSTOI  sigma   verdict
+spectral loss off -> on    +0.117    6.7  +0.0074   13.0   real, and large
+capacity 3.0M -> 9.3M      +0.019    1.1  +0.0025    4.4   real, small
+stride 9 -> 33 bands       -0.015   -0.9  -0.0047   -8.4   real, and worse
+data full -> quarter       -0.021   -1.2  -0.0034   -6.1   real, and worse
+spectral weight 50 -> 600  +0.019    1.1  +0.0012    2.1   real, marginal
+```
+
+Capacity and data volume were BOTH null under the old SI-SNR-only objective and
+are real now. Neither is large.
+
+The spectral weight knob is spent: off 1.682, w50 1.780, w200 1.784, w600
+1.799. Almost all the gain is from having the term at all. Weight it by
+MEASUREMENT -- `train.py --loss-scales` backpropagates each term alone and
+reports the gradient it produces. Never by loss values; their ratio swings from
+8 to 451 across a run.
+
+### What is actually wrong with the mask
+
+`mask_diagnosis.py` and `over_suppression.py`, on converged weights:
+
+- correlation with the ideal mask 0.617, mean absolute difference 0.198
+- only 1.77x smoother than ideal, so NOT blurred
+- an ideal mask blurred to the model's own roughness still scores 2.62 against
+  the model's 1.68
+
+**The mask is sharp and in the wrong places.** The error is a regression toward
+the middle: where the ideal wants 0 the model leaves 0.134, where it wants 1 it
+keeps 0.707. Total energy kept is 0.690 against the ideal's 0.695, so the
+"16% over-suppression" once noted here was a checkpoint artefact and is
+withdrawn. The hedging is a model correctly averaging over what it does not
+know, and no post-processing escapes it.
+
+### Next
+
+**Train the mask against the ideal mask directly.** The model is only ever told
+its reconstructed audio was wrong; it is never shown the mask it should have
+made, though the mask is the only thing it produces. Add a `MASK_LOSS_WEIGHT`
+term, sized with `--loss-scales`. This is the only KIND of change that has ever
+worked here, and the diagnosis points straight at it.
+
+Then: push capacity further, sweep `SPECTRAL_COMPRESSION`, and revisit the
+33-band change only if something makes the optimisation easier.
+
+An epoch is 11.3 s at 3.0M and 17.3 s at 9.3M; a 150-epoch run is about an
+hour. `EARLY_STOP_PATIENCE` is 0 on purpose -- it watched validation loss while
+results are judged on PESQ, making training length a hidden variable.
 
 ## Real-time processing
 

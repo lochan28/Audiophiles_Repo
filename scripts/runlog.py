@@ -97,7 +97,7 @@ def build_tag(config, keys=("lstm_hidden", "lookahead_frames")):
              "aux_loss_weight": "aux", "batch_size": "b",
              "learning_rate": "lr", "encoder_width": "w",
              "spectral_loss_weight": "spec", "mask_max": "mask",
-             "lstm_bands": "bands", "data_fraction": "data"}
+             "lstm_bands": "bands", "data_fraction": "data", "seed": "s"}
     parts = []
     for k in keys:
         if k in config and config[k] is not None:
