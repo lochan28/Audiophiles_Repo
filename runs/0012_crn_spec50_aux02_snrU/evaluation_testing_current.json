@@ -1,0 +1,18 @@
+{
+  "run": "0012_crn_spec50_aux02_snrU",
+  "split": "testing",
+  "checkpoint": "last.pt",
+  "epoch": 80,
+  "snr_profile_scored_on": "90% U(0,15) / 10% U(-5,0)",
+  "snr_profile_trained_on": "uniform U(-5,+15)",
+  "current": {
+    "pesq": 1.7951482210159302,
+    "stoi": 0.8519004545661872,
+    "si_snr": 13.289475944519044,
+    "pesq_noisy": 1.2231039037704468,
+    "stoi_noisy": 0.7535307815896523,
+    "si_snr_noisy": 6.13753576695919
+  },
+  "note": "No prior testing score exists for this run: metrics.jsonl records validation only. Compare this against other runs scored on the same current set, never against an old number.",
+  "as_originally_recorded_validation": null
+}

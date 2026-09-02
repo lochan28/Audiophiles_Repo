@@ -1,0 +1,24 @@
+{
+  "run": "0023_crn_comp03_spec600_la10_s0_snrU",
+  "split": "validation",
+  "checkpoint": "best_pesq.pt",
+  "epoch": 45,
+  "snr_profile_scored_on": "90% U(0,15) / 10% U(-5,0)",
+  "snr_profile_trained_on": "uniform U(-5,+15)",
+  "current": {
+    "pesq": 2.102415383278907,
+    "stoi": 0.8831058570011304,
+    "si_snr": 13.205999576128447,
+    "pesq_noisy": 1.2299876996687242,
+    "stoi_noisy": 0.781392319622393,
+    "si_snr_noisy": 6.185665289890933
+  },
+  "as_originally_recorded": {
+    "window": "epoch >= 110",
+    "evals": 9,
+    "pesq": 1.914239718734338,
+    "stoi": 0.8589382757904078,
+    "si_snr": 12.116702350610527
+  },
+  "note": "`as_originally_recorded` was measured on the archived set in generated_test_mixtures_snr_uniform/ under a flat U(-5,+15) SNR draw. The two are not comparable; the difference is mostly the exam, not the model."
+}

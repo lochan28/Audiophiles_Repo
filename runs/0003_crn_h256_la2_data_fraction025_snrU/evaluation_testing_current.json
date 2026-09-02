@@ -1,0 +1,18 @@
+{
+  "run": "0003_crn_h256_la2_data_fraction025_snrU",
+  "split": "testing",
+  "checkpoint": "last.pt",
+  "epoch": 69,
+  "snr_profile_scored_on": "90% U(0,15) / 10% U(-5,0)",
+  "snr_profile_trained_on": "uniform U(-5,+15)",
+  "current": {
+    "pesq": 1.689530885696411,
+    "stoi": 0.8422581658665397,
+    "si_snr": 13.26672802066803,
+    "pesq_noisy": 1.2231039037704468,
+    "stoi_noisy": 0.7535307815896523,
+    "si_snr_noisy": 6.13753576695919
+  },
+  "note": "No prior testing score exists for this run: metrics.jsonl records validation only. Compare this against other runs scored on the same current set, never against an old number.",
+  "as_originally_recorded_validation": null
+}

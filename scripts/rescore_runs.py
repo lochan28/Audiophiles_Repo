@@ -126,8 +126,11 @@ def main():
                         "pesq_noisy": o["pesq_noisy"],
                         "stoi_noisy": o["stoi_noisy"],
                         "si_snr_noisy": o["si_snr_noisy"]},
-            "as_originally_recorded": old,
-            "note": ("`as_originally_recorded` was measured on the archived set "
+            # metrics.jsonl only ever holds VALIDATION scores, so this is
+            # meaningless beside a testing result and is omitted there.
+            "as_originally_recorded_validation":
+                old if args.split == "validation" else None,
+            "note": ("`as_originally_recorded_validation` was measured on the archived set "
                      "in generated_test_mixtures_snr_uniform/ under a flat "
                      "U(-5,+15) SNR draw. The two are not comparable; the "
                      "difference is mostly the exam, not the model."),

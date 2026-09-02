@@ -1508,7 +1508,12 @@ SI-SNR  11.86
 Extending 80 to 150 epochs was worth about +0.011 and the curve is flat from
 epoch 110, so 150 is enough and nothing is hiding further out.
 
-## 20. What to try next
+## 20. What to try next (superseded -- see Section 21)
+
+**This section predates the SNR distribution change and the experiments
+that followed it.** Its recommendation, training the mask against the
+ideal mask directly, was tried in run 0019 and made things 16 sigma
+worse; see Section 19. Kept for the reasoning, not the advice.
 
 The oracle ceiling of PESQ 3.31 remains the yardstick. Run 0016 captures about
 31% of the achievable gain.
@@ -1538,3 +1543,120 @@ Behind it, in order:
 
 Not indicated by anything measured here: DCCRN, complex masks, any phase-based
 fix, raising `MASK_MAX`, and collecting more noise categories.
+
+## 21. The SNR distribution change, and why every earlier number moved
+
+### What changed
+
+Until run 0025, every mixture -- training, validation and testing -- drew its
+SNR from a flat **U(-5, +15) dB**. A quarter of every set therefore sat below
+0 dB, where the noise is louder than the speech.
+
+From run 0026 onward the draw is **90% from U(0, +15) and 10% from U(-5, 0)**.
+The judgement behind it is that ordinary conditions are the common case and the
+punishing band should be present but not dominant. The frozen evaluation sets
+were rebuilt from scratch at seed 20260901 to match.
+
+### The consequence, stated before any number is quoted
+
+**The change alone is worth about +0.19 PESQ on validation with the model
+completely untouched.** Run 0025 scores 1.898 on the old set and 2.098 on the
+new one. Identical weights; the exam got easier.
+
+The noisy baseline moved too, from PESQ 1.199 / STOI 0.745 / SI-SNR +4.5 dB to
+**1.230 / 0.781 / +6.19** on validation.
+
+Scores from either side of this change are **not comparable**. Every run records
+an `snr_profile` field; runs from the old distribution carry a `_snrU` suffix
+and are badged "old SNR" in the dashboard.
+
+### The measurement that motivated it
+
+Before the change, run 0025 was scored separately on each band of the old
+testing set:
+
+| band | PESQ | STOI | SI-SNR | share of set |
+| --- | --- | --- | --- | --- |
+| SNR < 0 dB | 1.320 | 0.7324 | 6.12 | 27% |
+| SNR >= 0 dB | 2.057 | 0.8830 | 14.76 | 73% |
+
+**Essentially all of the remaining shortfall lived below 0 dB.** At 0 dB and
+above the model already met STOI 0.883 against a 0.85 target and SI-SNR 14.76
+against 15, leaving only PESQ short. Reweighting those two bands from 27/73 to
+10/90 is the entire effect of the change.
+
+### Frozen sets are composed exactly, not sampled
+
+A 10% band drawn at random over 143 clips landed at 14.0%. That is ordinary
+binomial spread, but wrong for a yardstick, and worth about 0.027 PESQ -- more
+than the PESQ noise floor. `low_band_selection()` therefore picks evenly spaced
+indices so the count is exact and the hard clips do not clump: validation holds
+14 of 143 below 0 dB, testing 12 of 125. Training still draws at random, which
+is correct there.
+
+Verified after generation: 268 pairs, requested and measured SNR agreeing to
+0.0000 dB, every file exactly 48000 samples, validation and testing speakers
+disjoint.
+
+### Nothing was thrown away
+
+The old mixtures live in `generated_test_mixtures_snr_uniform/` and remain
+loadable with `FrozenMixtures(split, root=LEGACY_MIXTURE_DIR)`. Every run keeps
+its original metrics, samples, audio and checkpoints.
+
+`scripts/rescore_runs.py` then scored all 25 old checkpoints on the new set, so
+history stays usable rather than becoming trivia. Each run gained
+`evaluation_<split>_current.json` holding the new numbers and, for validation,
+the old converged mean beside them. Nothing already on disk was modified.
+
+### What the re-scoring showed
+
+| run | old exam | new exam | STOI (new) |
+| --- | --- | --- | --- |
+| 0023 lookahead 10 | 1.914 | 2.102 | 0.8831 |
+| 0025 lookahead 6 | 1.898 | 2.098 | 0.8824 |
+| 0024 lookahead 4 | 1.855 | 2.081 | 0.8799 |
+| 0017 seed 1 | 1.871 | 2.060 | 0.8822 |
+| 0016 seed 0 | 1.857 | 2.058 | 0.8823 |
+| 0018 seed 2 | 1.847 | 2.042 | 0.8806 |
+
+**Every conclusion survived.** The ranking is identical on both exams, so the
+findings were about the models rather than artefacts of the old mixture set.
+
+**One result changed, in your favour.** Lookahead 10 and 6 were 0.016 apart on
+the old exam and are 0.004 apart on the new one -- inside the PESQ noise floor.
+The extra lookahead was earning its keep on the hard clips that are now
+down-weighted, so lookahead 6 gives the same score for 40 ms less latency.
+
+### Where the targets stand
+
+Best model until run 0026 finishes is run 0025, scored on the held-out testing
+set:
+
+```
+                     PESQ     STOI    SI-SNR
+held-out testing    1.925   0.8609    13.52
+noisy input         1.223   0.7535     6.14
+targets             2.5     0.85      15.0
+```
+
+**STOI clears its target on held-out audio.** PESQ is short by 0.58, SI-SNR by
+1.5.
+
+### What this invalidated, and has not yet been redone
+
+- **The noise floor.** The sd of 0.0004 STOI and 0.0124 PESQ was measured on the
+  old exam with three seeds. It has not been re-measured, and until it is, any
+  small difference on the new exam is indicative rather than established.
+- **The oracle ceiling.** PESQ 3.314 for an ideal mask was computed on the old
+  set. `oracle_ceiling.py` needs re-running.
+- **Every model.** All 26 runs up to 0025 were TRAINED on the old distribution
+  and are only being scored on the new one. Run 0026 is the first whose training
+  and evaluation agree.
+
+### Reverting
+
+The commit before this change is tagged `pre-snr-change`. `git reset --hard
+pre-snr-change` restores the previous state exactly, including the original
+frozen mixtures and run names.
+

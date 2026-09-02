@@ -1,0 +1,18 @@
+{
+  "run": "0024_crn_comp03_spec600_la4_s0_snrU",
+  "split": "testing",
+  "checkpoint": "best_pesq.pt",
+  "epoch": 60,
+  "snr_profile_scored_on": "90% U(0,15) / 10% U(-5,0)",
+  "snr_profile_trained_on": "uniform U(-5,+15)",
+  "current": {
+    "pesq": 1.8952089853286742,
+    "stoi": 0.8579410324620527,
+    "si_snr": 13.37406262588501,
+    "pesq_noisy": 1.2231039037704468,
+    "stoi_noisy": 0.7535307815896523,
+    "si_snr_noisy": 6.13753576695919
+  },
+  "note": "No prior testing score exists for this run: metrics.jsonl records validation only. Compare this against other runs scored on the same current set, never against an old number.",
+  "as_originally_recorded_validation": null
+}

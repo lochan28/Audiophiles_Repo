@@ -16,16 +16,26 @@ just changed.
 
     THE MODEL IS COMPLETE.
     Training, evaluation and the dashboard are built and running.
-    18 runs done. Best is 0016: PESQ 1.857, STOI 0.854, SI-SNR 11.86.
-    STOI clears its target; PESQ is the one still short (2.5).
+    26 runs done.
 
-    Settled since: the objective was the ceiling, not the
-    architecture. Phase, mask ceiling, LSTM resolution and mask
-    post-processing are all measured dead ends. Capacity and data
-    volume are real but small. PESQ is too noisy to compare runs
-    with -- use STOI.
+    THE SNR DISTRIBUTION CHANGED after run 0025: mixtures are now
+    90% U(0,15) / 10% U(-5,0) instead of a flat U(-5,+15), and the
+    frozen sets were rebuilt. That is worth ~+0.19 PESQ on its own,
+    so scores either side of it are NOT comparable. Runs from the
+    old distribution carry a _snrU suffix.
 
-    Next: train the mask against the ideal mask directly.  <-- WE ARE HERE
+    Best so far, on held-out audio scored against the new set:
+    run 0025 at PESQ 1.925, STOI 0.8609, SI-SNR 13.52.
+    STOI clears its 0.85 target; PESQ and SI-SNR do not.
+
+    Settled: the objective was the ceiling, not the architecture.
+    Phase, mask ceiling, LSTM resolution, mask post-processing,
+    mask supervision and both compression directions are all
+    measured dead ends. Only two things ever worked -- fixing the
+    training objective, and giving the model more future context.
+
+    Next: run 0026, the first model trained AND scored on the
+    new distribution.                                     <-- WE ARE HERE
 ```
 
 Everything is in `scripts/model_crn.py`, 3,018,072 parameters, running on the
@@ -318,39 +328,43 @@ model, well inside 8 GB.
    the scores down. The deferred voice-distortion augmentation is
    correspondingly a weaker bet than it looked.
 
-## Results so far -- the ceiling was the objective, not the architecture
+## Results so far -- two things worked, everything else was a dead end
 
-Eighteen runs. Full detail in `PROJECT_CONTEXT_4.md` Sections 18-20.
+26 runs. Full detail in `PROJECT_CONTEXT_4.md` Sections 18-21.
 
-**Read scores on STOI, not PESQ.** Training is not reproducible -- two runs
-with the same settings AND the same seed differ by 0.029 PESQ, because cuDNN's
-LSTM backward is nondeterministic. Three identical runs measured the cost:
+**Check which exam a score sat before comparing it.** The SNR distribution
+changed after run 0025, from a flat U(-5,+15) to 90% U(0,15) / 10% U(-5,0), and
+the frozen sets were rebuilt. That alone moves PESQ by about +0.19 with the
+model untouched -- run 0025 scores 1.898 on the old set and 2.098 on the new
+one. Old-distribution runs carry a `_snrU` suffix; `rescore_runs.py` has scored
+all of them on the current set so the two eras can be lined up.
+
+**Read scores on STOI, not PESQ.** Training is not reproducible -- two runs with
+the same settings and the same seed differ by 0.029 PESQ, because cuDNN's LSTM
+backward is nondeterministic. Three identical runs measured the cost on the old
+exam: PESQ sd 0.0124, STOI sd 0.0004, SI-SNR sd 0.03. PESQ is 13x noisier. That
+floor has not yet been re-measured on the new exam.
+
+On the current set, validation:
 
 ```
-metric   sd across identical runs   relative
-PESQ     0.0124                     0.67%
-STOI     0.0004                     0.05%
-SI-SNR   0.03                       0.25%
+run    tested                    PESQ    STOI    SI-SNR
+noisy  input                    1.230  0.7814    6.19
+0016   9.3M, lookahead 2        2.058  0.8823   13.01
+0023   lookahead 10             2.102  0.8831   13.21
+0024   lookahead 4              2.081  0.8799   13.05
+0025   lookahead 6  <- best     2.098  0.8824   13.19
 ```
 
-PESQ is 13x noisier. Nearly every result here is around 0.02 PESQ -- one sigma,
-uncallable -- while the same comparison on STOI is decisive. Report PESQ
-against the 2.5 target; decide on STOI.
+Run 0025 on held-out testing: **PESQ 1.925, STOI 0.8609, SI-SNR 13.52**, against
+targets of 2.5, 0.85 and 15. STOI is met.
 
-```
-run    tested                    PESQ           STOI    SI-SNR
-0009   baseline, SI-SNR only     1.682 +-0.011  0.8398   11.57
-0010   compressed-mag loss 200   1.784 +-0.006  0.8449   11.59
-0011   compressed-mag loss 600   1.799 +-0.007  0.8471   11.66
-0013   LSTM sees 33 bands        1.784 +-0.012  0.8424   11.35
-0014   capacity 9.3M             1.818 +-0.009  0.8496   11.64
-0015   quarter of the data       1.778 +-0.017  0.8437   11.44
-0016   9.3M, 150 epochs          1.857 +-0.006  0.8543   11.86
-```
+### Only two changes ever mattered
 
-Run 0016 is the best model and **clears the 0.850 STOI target**, the first of
-the three to be met. Its peak was 1.865 at epoch 135; the curve is flat from
-110.
+**Fixing the training objective** (+0.117 PESQ, 13 sigma) and **giving the model
+more future context** (+0.040 PESQ, 7 sigma at lookahead 6). Both change what
+the model is *told*, not how big it is. Capacity is real but small; data volume
+matters but we have no more of it.
 
 ### What the cheating test showed
 

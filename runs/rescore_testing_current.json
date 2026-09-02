@@ -1,0 +1,456 @@
+{
+  "snr_profile": "90% U(0,15) / 10% U(-5,0)",
+  "split": "testing",
+  "runs": [
+    {
+      "run": "0001_crn_h256_la2_snrU",
+      "split": "testing",
+      "checkpoint": "last.pt",
+      "epoch": 54,
+      "snr_profile_scored_on": "90% U(0,15) / 10% U(-5,0)",
+      "snr_profile_trained_on": "uniform U(-5,+15)",
+      "current": {
+        "pesq": 1.6664594316482544,
+        "stoi": 0.8410089139517359,
+        "si_snr": 13.059520829856396,
+        "pesq_noisy": 1.2231039037704468,
+        "stoi_noisy": 0.7535307815896523,
+        "si_snr_noisy": 6.13753576695919
+      },
+      "note": "`as_originally_recorded` was measured on the archived set in generated_test_mixtures_snr_uniform/ under a flat U(-5,+15) SNR draw. The two are not comparable; the difference is mostly the exam, not the model.",
+      "as_originally_recorded_validation": null
+    },
+    {
+      "run": "0002_crn_h512_la2_snrU",
+      "split": "testing",
+      "checkpoint": "last.pt",
+      "epoch": 62,
+      "snr_profile_scored_on": "90% U(0,15) / 10% U(-5,0)",
+      "snr_profile_trained_on": "uniform U(-5,+15)",
+      "current": {
+        "pesq": 1.699181445121765,
+        "stoi": 0.8440646749647981,
+        "si_snr": 13.25559630203247,
+        "pesq_noisy": 1.2231039037704468,
+        "stoi_noisy": 0.7535307815896523,
+        "si_snr_noisy": 6.13753576695919
+      },
+      "note": "`as_originally_recorded` was measured on the archived set in generated_test_mixtures_snr_uniform/ under a flat U(-5,+15) SNR draw. The two are not comparable; the difference is mostly the exam, not the model.",
+      "as_originally_recorded_validation": null
+    },
+    {
+      "run": "0003_crn_h256_la2_data_fraction025_snrU",
+      "split": "testing",
+      "checkpoint": "last.pt",
+      "epoch": 69,
+      "snr_profile_scored_on": "90% U(0,15) / 10% U(-5,0)",
+      "snr_profile_trained_on": "uniform U(-5,+15)",
+      "current": {
+        "pesq": 1.689530885696411,
+        "stoi": 0.8422581658665397,
+        "si_snr": 13.26672802066803,
+        "pesq_noisy": 1.2231039037704468,
+        "stoi_noisy": 0.7535307815896523,
+        "si_snr_noisy": 6.13753576695919
+      },
+      "note": "`as_originally_recorded` was measured on the archived set in generated_test_mixtures_snr_uniform/ under a flat U(-5,+15) SNR draw. The two are not comparable; the difference is mostly the exam, not the model.",
+      "as_originally_recorded_validation": null
+    },
+    {
+      "run": "0004_crn_h256_la2_data_fraction05_snrU",
+      "split": "testing",
+      "checkpoint": "last.pt",
+      "epoch": 49,
+      "snr_profile_scored_on": "90% U(0,15) / 10% U(-5,0)",
+      "snr_profile_trained_on": "uniform U(-5,+15)",
+      "current": {
+        "pesq": 1.661925560951233,
+        "stoi": 0.838762486633723,
+        "si_snr": 13.174756670951844,
+        "pesq_noisy": 1.2231039037704468,
+        "stoi_noisy": 0.7535307815896523,
+        "si_snr_noisy": 6.13753576695919
+      },
+      "note": "`as_originally_recorded` was measured on the archived set in generated_test_mixtures_snr_uniform/ under a flat U(-5,+15) SNR draw. The two are not comparable; the difference is mostly the exam, not the model.",
+      "as_originally_recorded_validation": null
+    },
+    {
+      "run": "0005_crn_h256_la2_data_fraction1_snrU",
+      "split": "testing",
+      "checkpoint": "last.pt",
+      "epoch": 71,
+      "snr_profile_scored_on": "90% U(0,15) / 10% U(-5,0)",
+      "snr_profile_trained_on": "uniform U(-5,+15)",
+      "current": {
+        "pesq": 1.686727089881897,
+        "stoi": 0.8413846744899369,
+        "si_snr": 13.229867094993592,
+        "pesq_noisy": 1.2231039037704468,
+        "stoi_noisy": 0.7535307815896523,
+        "si_snr_noisy": 6.13753576695919
+      },
+      "note": "`as_originally_recorded` was measured on the archived set in generated_test_mixtures_snr_uniform/ under a flat U(-5,+15) SNR draw. The two are not comparable; the difference is mostly the exam, not the model.",
+      "as_originally_recorded_validation": null
+    },
+    {
+      "run": "0006_crn_h256_la2_data_fraction1_snrU",
+      "split": "testing",
+      "checkpoint": "last.pt",
+      "epoch": 43,
+      "snr_profile_scored_on": "90% U(0,15) / 10% U(-5,0)",
+      "snr_profile_trained_on": "uniform U(-5,+15)",
+      "current": {
+        "pesq": 1.664239002227783,
+        "stoi": 0.8385286234474296,
+        "si_snr": 13.050261353969574,
+        "pesq_noisy": 1.2231039037704468,
+        "stoi_noisy": 0.7535307815896523,
+        "si_snr_noisy": 6.13753576695919
+      },
+      "note": "`as_originally_recorded` was measured on the archived set in generated_test_mixtures_snr_uniform/ under a flat U(-5,+15) SNR draw. The two are not comparable; the difference is mostly the exam, not the model.",
+      "as_originally_recorded_validation": null
+    },
+    {
+      "run": "0007_crn_h256_la2_data_fraction1_snrU",
+      "split": "testing",
+      "checkpoint": "last.pt",
+      "epoch": 88,
+      "snr_profile_scored_on": "90% U(0,15) / 10% U(-5,0)",
+      "snr_profile_trained_on": "uniform U(-5,+15)",
+      "current": {
+        "pesq": 1.716505681037903,
+        "stoi": 0.8479528444761407,
+        "si_snr": 13.398017877578736,
+        "pesq_noisy": 1.2231039037704468,
+        "stoi_noisy": 0.7535307815896523,
+        "si_snr_noisy": 6.13753576695919
+      },
+      "note": "`as_originally_recorded` was measured on the archived set in generated_test_mixtures_snr_uniform/ under a flat U(-5,+15) SNR draw. The two are not comparable; the difference is mostly the exam, not the model.",
+      "as_originally_recorded_validation": null
+    },
+    {
+      "run": "0008_crn_h256_la2_data_fraction1_snrU",
+      "split": "testing",
+      "checkpoint": "last.pt",
+      "epoch": 65,
+      "snr_profile_scored_on": "90% U(0,15) / 10% U(-5,0)",
+      "snr_profile_trained_on": "uniform U(-5,+15)",
+      "current": {
+        "pesq": 1.7130686588287354,
+        "stoi": 0.844296965976512,
+        "si_snr": 13.161588027000427,
+        "pesq_noisy": 1.2231039037704468,
+        "stoi_noisy": 0.7535307815896523,
+        "si_snr_noisy": 6.13753576695919
+      },
+      "note": "`as_originally_recorded` was measured on the archived set in generated_test_mixtures_snr_uniform/ under a flat U(-5,+15) SNR draw. The two are not comparable; the difference is mostly the exam, not the model.",
+      "as_originally_recorded_validation": null
+    },
+    {
+      "run": "0009_crn_mask_max1_aux02_snrU",
+      "split": "testing",
+      "checkpoint": "last.pt",
+      "epoch": 114,
+      "snr_profile_scored_on": "90% U(0,15) / 10% U(-5,0)",
+      "snr_profile_trained_on": "uniform U(-5,+15)",
+      "current": {
+        "pesq": 1.6975272941589354,
+        "stoi": 0.8432771494876041,
+        "si_snr": 13.213852787971497,
+        "pesq_noisy": 1.2231039037704468,
+        "stoi_noisy": 0.7535307815896523,
+        "si_snr_noisy": 6.13753576695919
+      },
+      "note": "`as_originally_recorded` was measured on the archived set in generated_test_mixtures_snr_uniform/ under a flat U(-5,+15) SNR draw. The two are not comparable; the difference is mostly the exam, not the model.",
+      "as_originally_recorded_validation": null
+    },
+    {
+      "run": "0010_crn_spec200_aux02_snrU",
+      "split": "testing",
+      "checkpoint": "last.pt",
+      "epoch": 80,
+      "snr_profile_scored_on": "90% U(0,15) / 10% U(-5,0)",
+      "snr_profile_trained_on": "uniform U(-5,+15)",
+      "current": {
+        "pesq": 1.8071703433990478,
+        "stoi": 0.8507153774361987,
+        "si_snr": 13.105557249069214,
+        "pesq_noisy": 1.2231039037704468,
+        "stoi_noisy": 0.7535307815896523,
+        "si_snr_noisy": 6.13753576695919
+      },
+      "note": "`as_originally_recorded` was measured on the archived set in generated_test_mixtures_snr_uniform/ under a flat U(-5,+15) SNR draw. The two are not comparable; the difference is mostly the exam, not the model.",
+      "as_originally_recorded_validation": null
+    },
+    {
+      "run": "0011_crn_spec600_aux02_snrU",
+      "split": "testing",
+      "checkpoint": "last.pt",
+      "epoch": 80,
+      "snr_profile_scored_on": "90% U(0,15) / 10% U(-5,0)",
+      "snr_profile_trained_on": "uniform U(-5,+15)",
+      "current": {
+        "pesq": 1.8203515157699586,
+        "stoi": 0.8531726315925742,
+        "si_snr": 13.12941403388977,
+        "pesq_noisy": 1.2231039037704468,
+        "stoi_noisy": 0.7535307815896523,
+        "si_snr_noisy": 6.13753576695919
+      },
+      "note": "`as_originally_recorded` was measured on the archived set in generated_test_mixtures_snr_uniform/ under a flat U(-5,+15) SNR draw. The two are not comparable; the difference is mostly the exam, not the model.",
+      "as_originally_recorded_validation": null
+    },
+    {
+      "run": "0012_crn_spec50_aux02_snrU",
+      "split": "testing",
+      "checkpoint": "last.pt",
+      "epoch": 80,
+      "snr_profile_scored_on": "90% U(0,15) / 10% U(-5,0)",
+      "snr_profile_trained_on": "uniform U(-5,+15)",
+      "current": {
+        "pesq": 1.7951482210159302,
+        "stoi": 0.8519004545661872,
+        "si_snr": 13.289475944519044,
+        "pesq_noisy": 1.2231039037704468,
+        "stoi_noisy": 0.7535307815896523,
+        "si_snr_noisy": 6.13753576695919
+      },
+      "note": "`as_originally_recorded` was measured on the archived set in generated_test_mixtures_snr_uniform/ under a flat U(-5,+15) SNR draw. The two are not comparable; the difference is mostly the exam, not the model.",
+      "as_originally_recorded_validation": null
+    },
+    {
+      "run": "0013_crn_spec600_bands33_snrU",
+      "split": "testing",
+      "checkpoint": "last.pt",
+      "epoch": 80,
+      "snr_profile_scored_on": "90% U(0,15) / 10% U(-5,0)",
+      "snr_profile_trained_on": "uniform U(-5,+15)",
+      "current": {
+        "pesq": 1.8095485963821412,
+        "stoi": 0.8487455247418134,
+        "si_snr": 13.025589105606079,
+        "pesq_noisy": 1.2231039037704468,
+        "stoi_noisy": 0.7535307815896523,
+        "si_snr_noisy": 6.13753576695919
+      },
+      "note": "`as_originally_recorded` was measured on the archived set in generated_test_mixtures_snr_uniform/ under a flat U(-5,+15) SNR draw. The two are not comparable; the difference is mostly the exam, not the model.",
+      "as_originally_recorded_validation": null
+    },
+    {
+      "run": "0014_crn_spec600_h512_data1_snrU",
+      "split": "testing",
+      "checkpoint": "last.pt",
+      "epoch": 80,
+      "snr_profile_scored_on": "90% U(0,15) / 10% U(-5,0)",
+      "snr_profile_trained_on": "uniform U(-5,+15)",
+      "current": {
+        "pesq": 1.8284429273605347,
+        "stoi": 0.8546473378458556,
+        "si_snr": 13.155993714332581,
+        "pesq_noisy": 1.2231039037704468,
+        "stoi_noisy": 0.7535307815896523,
+        "si_snr_noisy": 6.13753576695919
+      },
+      "note": "`as_originally_recorded` was measured on the archived set in generated_test_mixtures_snr_uniform/ under a flat U(-5,+15) SNR draw. The two are not comparable; the difference is mostly the exam, not the model.",
+      "as_originally_recorded_validation": null
+    },
+    {
+      "run": "0015_crn_spec600_h256_data025_snrU",
+      "split": "testing",
+      "checkpoint": "last.pt",
+      "epoch": 80,
+      "snr_profile_scored_on": "90% U(0,15) / 10% U(-5,0)",
+      "snr_profile_trained_on": "uniform U(-5,+15)",
+      "current": {
+        "pesq": 1.8249252576828003,
+        "stoi": 0.8509062463559599,
+        "si_snr": 13.166186328887939,
+        "pesq_noisy": 1.2231039037704468,
+        "stoi_noisy": 0.7535307815896523,
+        "si_snr_noisy": 6.13753576695919
+      },
+      "note": "`as_originally_recorded` was measured on the archived set in generated_test_mixtures_snr_uniform/ under a flat U(-5,+15) SNR draw. The two are not comparable; the difference is mostly the exam, not the model.",
+      "as_originally_recorded_validation": null
+    },
+    {
+      "run": "0016_crn_spec600_h512_data1_snrU",
+      "split": "testing",
+      "checkpoint": "best_pesq.pt",
+      "epoch": 135,
+      "snr_profile_scored_on": "90% U(0,15) / 10% U(-5,0)",
+      "snr_profile_trained_on": "uniform U(-5,+15)",
+      "current": {
+        "pesq": 1.8907133378982544,
+        "stoi": 0.8594102935485989,
+        "si_snr": 13.364235527038574,
+        "pesq_noisy": 1.2231039037704468,
+        "stoi_noisy": 0.7535307815896523,
+        "si_snr_noisy": 6.13753576695919
+      },
+      "note": "`as_originally_recorded` was measured on the archived set in generated_test_mixtures_snr_uniform/ under a flat U(-5,+15) SNR draw. The two are not comparable; the difference is mostly the exam, not the model.",
+      "as_originally_recorded_validation": null
+    },
+    {
+      "run": "0017_crn_spec600_h512_data1_s1_snrU",
+      "split": "testing",
+      "checkpoint": "best_pesq.pt",
+      "epoch": 125,
+      "snr_profile_scored_on": "90% U(0,15) / 10% U(-5,0)",
+      "snr_profile_trained_on": "uniform U(-5,+15)",
+      "current": {
+        "pesq": 1.8936302461624146,
+        "stoi": 0.8584814129849796,
+        "si_snr": 13.458608722686767,
+        "pesq_noisy": 1.2231039037704468,
+        "stoi_noisy": 0.7535307815896523,
+        "si_snr_noisy": 6.13753576695919
+      },
+      "note": "`as_originally_recorded` was measured on the archived set in generated_test_mixtures_snr_uniform/ under a flat U(-5,+15) SNR draw. The two are not comparable; the difference is mostly the exam, not the model.",
+      "as_originally_recorded_validation": null
+    },
+    {
+      "run": "0018_crn_spec600_h512_data1_s2_snrU",
+      "split": "testing",
+      "checkpoint": "best_pesq.pt",
+      "epoch": 110,
+      "snr_profile_scored_on": "90% U(0,15) / 10% U(-5,0)",
+      "snr_profile_trained_on": "uniform U(-5,+15)",
+      "current": {
+        "pesq": 1.8813198900222778,
+        "stoi": 0.8574457210910423,
+        "si_snr": 13.347436731338501,
+        "pesq_noisy": 1.2231039037704468,
+        "stoi_noisy": 0.7535307815896523,
+        "si_snr_noisy": 6.13753576695919
+      },
+      "note": "`as_originally_recorded` was measured on the archived set in generated_test_mixtures_snr_uniform/ under a flat U(-5,+15) SNR draw. The two are not comparable; the difference is mostly the exam, not the model.",
+      "as_originally_recorded_validation": null
+    },
+    {
+      "run": "0019_crn_spec600_h512_mloss100_s0_snrU",
+      "split": "testing",
+      "checkpoint": "best_pesq.pt",
+      "epoch": 85,
+      "snr_profile_scored_on": "90% U(0,15) / 10% U(-5,0)",
+      "snr_profile_trained_on": "uniform U(-5,+15)",
+      "current": {
+        "pesq": 1.8194408321380615,
+        "stoi": 0.8535942674499484,
+        "si_snr": 13.052189628601074,
+        "pesq_noisy": 1.2231039037704468,
+        "stoi_noisy": 0.7535307815896523,
+        "si_snr_noisy": 6.13753576695919
+      },
+      "note": "`as_originally_recorded` was measured on the archived set in generated_test_mixtures_snr_uniform/ under a flat U(-5,+15) SNR draw. The two are not comparable; the difference is mostly the exam, not the model.",
+      "as_originally_recorded_validation": null
+    },
+    {
+      "run": "0020_crn_comp015_spec600_h512_s0_snrU",
+      "split": "testing",
+      "checkpoint": "best_pesq.pt",
+      "epoch": 110,
+      "snr_profile_scored_on": "90% U(0,15) / 10% U(-5,0)",
+      "snr_profile_trained_on": "uniform U(-5,+15)",
+      "current": {
+        "pesq": 1.8212824831008911,
+        "stoi": 0.8483028796506381,
+        "si_snr": 13.080397671222686,
+        "pesq_noisy": 1.2231039037704468,
+        "stoi_noisy": 0.7535307815896523,
+        "si_snr_noisy": 6.13753576695919
+      },
+      "note": "`as_originally_recorded` was measured on the archived set in generated_test_mixtures_snr_uniform/ under a flat U(-5,+15) SNR draw. The two are not comparable; the difference is mostly the exam, not the model.",
+      "as_originally_recorded_validation": null
+    },
+    {
+      "run": "0021_crn_comp05_spec600_h512_s0_snrU",
+      "split": "testing",
+      "checkpoint": "best_pesq.pt",
+      "epoch": 95,
+      "snr_profile_scored_on": "90% U(0,15) / 10% U(-5,0)",
+      "snr_profile_trained_on": "uniform U(-5,+15)",
+      "current": {
+        "pesq": 1.8753117389678955,
+        "stoi": 0.8616461390509155,
+        "si_snr": 13.406894918441772,
+        "pesq_noisy": 1.2231039037704468,
+        "stoi_noisy": 0.7535307815896523,
+        "si_snr_noisy": 6.13753576695919
+      },
+      "note": "`as_originally_recorded` was measured on the archived set in generated_test_mixtures_snr_uniform/ under a flat U(-5,+15) SNR draw. The two are not comparable; the difference is mostly the exam, not the model.",
+      "as_originally_recorded_validation": null
+    },
+    {
+      "run": "0022_crn_comp07_spec600_h512_s0_snrU",
+      "split": "testing",
+      "checkpoint": "best_pesq.pt",
+      "epoch": 65,
+      "snr_profile_scored_on": "90% U(0,15) / 10% U(-5,0)",
+      "snr_profile_trained_on": "uniform U(-5,+15)",
+      "current": {
+        "pesq": 1.8512877368927,
+        "stoi": 0.8591030299681532,
+        "si_snr": 13.348452739715576,
+        "pesq_noisy": 1.2231039037704468,
+        "stoi_noisy": 0.7535307815896523,
+        "si_snr_noisy": 6.13753576695919
+      },
+      "note": "`as_originally_recorded` was measured on the archived set in generated_test_mixtures_snr_uniform/ under a flat U(-5,+15) SNR draw. The two are not comparable; the difference is mostly the exam, not the model.",
+      "as_originally_recorded_validation": null
+    },
+    {
+      "run": "0023_crn_comp03_spec600_la10_s0_snrU",
+      "split": "testing",
+      "checkpoint": "best_pesq.pt",
+      "epoch": 45,
+      "snr_profile_scored_on": "90% U(0,15) / 10% U(-5,0)",
+      "snr_profile_trained_on": "uniform U(-5,+15)",
+      "current": {
+        "pesq": 1.938523159980774,
+        "stoi": 0.8624539999655353,
+        "si_snr": 13.586262189865112,
+        "pesq_noisy": 1.2231039037704468,
+        "stoi_noisy": 0.7535307815896523,
+        "si_snr_noisy": 6.13753576695919
+      },
+      "note": "`as_originally_recorded` was measured on the archived set in generated_test_mixtures_snr_uniform/ under a flat U(-5,+15) SNR draw. The two are not comparable; the difference is mostly the exam, not the model.",
+      "as_originally_recorded_validation": null
+    },
+    {
+      "run": "0024_crn_comp03_spec600_la4_s0_snrU",
+      "split": "testing",
+      "checkpoint": "best_pesq.pt",
+      "epoch": 60,
+      "snr_profile_scored_on": "90% U(0,15) / 10% U(-5,0)",
+      "snr_profile_trained_on": "uniform U(-5,+15)",
+      "current": {
+        "pesq": 1.8952089853286742,
+        "stoi": 0.8579410324620527,
+        "si_snr": 13.37406262588501,
+        "pesq_noisy": 1.2231039037704468,
+        "stoi_noisy": 0.7535307815896523,
+        "si_snr_noisy": 6.13753576695919
+      },
+      "note": "`as_originally_recorded` was measured on the archived set in generated_test_mixtures_snr_uniform/ under a flat U(-5,+15) SNR draw. The two are not comparable; the difference is mostly the exam, not the model.",
+      "as_originally_recorded_validation": null
+    },
+    {
+      "run": "0025_crn_comp03_spec600_la6_s0_snrU",
+      "split": "testing",
+      "checkpoint": "best_pesq.pt",
+      "epoch": 50,
+      "snr_profile_scored_on": "90% U(0,15) / 10% U(-5,0)",
+      "snr_profile_trained_on": "uniform U(-5,+15)",
+      "current": {
+        "pesq": 1.9245755777359008,
+        "stoi": 0.8608522919359365,
+        "si_snr": 13.521448076248168,
+        "pesq_noisy": 1.2231039037704468,
+        "stoi_noisy": 0.7535307815896523,
+        "si_snr_noisy": 6.13753576695919
+      },
+      "note": "`as_originally_recorded` was measured on the archived set in generated_test_mixtures_snr_uniform/ under a flat U(-5,+15) SNR draw. The two are not comparable; the difference is mostly the exam, not the model.",
+      "as_originally_recorded_validation": null
+    }
+  ]
+}

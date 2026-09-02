@@ -6,7 +6,7 @@ out, and what to do next. Nothing here requires having seen the conversation
 that produced it.
 
 Companion documents: `PROJECT_CONTEXT_4.md` (the long-form record; Sections
-18–20 hold the experiment history), `AGENTS_3.md` (the short operational brief
+18–21 hold the experiment history, 21 covers the SNR change), `AGENTS_3.md` (the short operational brief
 to read before suggesting anything), `CRN_STEPS.md` (how the model was built,
 step by step, with the checks each step passed).
 
@@ -38,41 +38,52 @@ Latency budget: 500–800 ms was the original allowance. We are far inside it.
 
 ## 2. Where the project stands right now
 
-**Best model: run `0016_crn_spec600_h512_data1`**, checkpoint `best_pesq.pt`
-(epoch 135), scored on the **held-out testing split** — 125 mixtures never used
-for training and never used to choose the model:
+**The SNR distribution changed after run 0025.** Mixtures were drawn from a
+flat U(-5,+15) dB; they are now drawn **90% from U(0,15) and 10% from
+U(-5,0)**, and the frozen evaluation sets were rebuilt to match. Read §4.0
+before comparing any two numbers in this project.
+
+Best model until run 0026 finishes is **run 0025**, scored on the current
+held-out testing set -- 125 mixtures never used for training and never used to
+choose the model:
 
 ```
                  raw input     our model     target     status
-PESQ               1.199         1.809        2.5       short by 0.69
-STOI               0.732         0.839        0.85      short by 0.011
-SI-SNR (dB)        4.74         12.23        15.0       short by 2.8
-latency                         136 ms       500-800    comfortably inside
+PESQ               1.223         1.925        2.5       short by 0.58
+STOI               0.754         0.861        0.85      MET
+SI-SNR (dB)        6.14         13.52        15.0       short by 1.5
+latency                         177 ms       500-800    comfortably inside
 ```
 
-On the **validation split** (143 mixtures, also used for checkpoint selection,
-so these are optimistic) the same model reads PESQ 1.857, STOI 0.854, SI-SNR
-11.86. **Quote the testing numbers externally.** The SIH deck quotes them.
+**STOI now clears its target on held-out audio.** Under the project's
+acceptance rule (§3) it becomes a constraint to protect rather than a goal to
+chase. PESQ and SI-SNR are the two still short.
 
-**It works, and it is not finished.** Every metric improves substantially over
-the raw input. None has cleared its target. STOI is closest.
+On the **validation split** (143 mixtures, also used for checkpoint selection,
+so optimistic) the same model reads PESQ 2.098 / STOI 0.8824 / SI-SNR 13.19.
+Quote the testing numbers externally.
+
+**Run 0026 is training** as of writing: the same configuration, but the first
+model whose training and evaluation distributions agree. Every run up to 0025
+was trained on the old flat distribution and is only being *scored* on the new
+one. At epoch 80 it reads PESQ 2.107 / STOI 0.8856, already above 0025.
 
 ### Latency, measured on an RTX 5060 laptop GPU
 
 ```
- 36 ms   lookahead    (16 ms unavoidable from STFT framing + 20 ms chosen)
+ 76 ms   lookahead    (16 ms unavoidable from STFT framing + 60 ms chosen)
 100 ms   chunk wait   (we process 100 ms at a time, so we wait for it to arrive)
 0.65 ms  compute
 -------
-136 ms   end to end
+177 ms   end to end
 ```
 
-Inside ITU-T G.114's 150 ms comfort limit for two-way speech. The budget is
-dominated by *waiting*, not thinking — the GPU idles 99.4% of the time, so
-there is large headroom for a slower embedded board. Target hardware is the
-NVIDIA Jetson AGX Orin, not yet tested.
-
----
+Inside the 500-800 ms budget the problem statement allows. It is **past**
+ITU-T G.114's 150 ms comfort limit, which earlier versions of this project
+claimed; that claim no longer holds and was traded deliberately for the
+lookahead gain in §7. The GPU idles 99.4% of the time, so there is large
+headroom for a slower embedded board. Target hardware is the NVIDIA Jetson AGX
+Orin, not yet tested.
 
 ## 3. The acceptance rule — read before proposing any change
 
@@ -89,19 +100,44 @@ one that matters.
 
 ---
 
-## 4. How to measure things here — the most important section
+## 4. How to measure things here -- the most important section
 
-Four rules, each learned by getting it wrong first. An LLM that ignores these
-will produce confident nonsense.
+Rules learned by getting each one wrong first. Anyone who ignores these will
+produce confident nonsense.
 
-### 4.1 Training is NOT reproducible. Never trust a single-run difference.
+### 4.0 &nbsp;Check which exam a score sat before comparing it
+
+The SNR distribution changed after run 0025. **That change alone is worth about
++0.19 PESQ with the model completely untouched** -- run 0025 scores 1.898 on the
+old set and 2.098 on the new one, identical weights. The noisy baseline moved
+too, from PESQ 1.199 / STOI 0.745 / +4.5 dB to 1.230 / 0.781 / +6.19.
+
+Guards in place:
+
+- every run records an `snr_profile` field
+- old-distribution runs are named with a `_snrU` suffix
+- the dashboard badges them "old SNR"
+- `scripts/rescore_runs.py` has scored all 25 old checkpoints on the current
+  set, written to `evaluation_<split>_current.json` inside each run
+
+**Use those re-scored numbers when comparing an old run with a new one.** The
+archived mixtures remain in `generated_test_mixtures_snr_uniform/` and load via
+`FrozenMixtures(split, root=LEGACY_MIXTURE_DIR)`.
+
+Why it was done: measured on the old testing set, run 0025 scored PESQ 1.320 /
+STOI 0.732 / SI-SNR 6.12 below 0 dB and 2.057 / 0.883 / 14.76 at 0 dB and
+above. Essentially all the remaining shortfall lived in the low band, which was
+27% of the set and is now 10%.
+
+### 4.1 &nbsp;Training is not reproducible. Never trust a single-run difference.
 
 Runs 0014 and 0016 share a configuration **and a seed**, yet diverge at epoch 1
-(training loss 25.1153 vs 25.6876) and by 0.029 PESQ over epochs 45–80. cuDNN's
+(training loss 25.1153 vs 25.6876) and by 0.029 PESQ over epochs 45-80. cuDNN's
 LSTM backward pass is nondeterministic and `torch.manual_seed` does not contain
 it.
 
-Three identical runs (0016, 0017, 0018 — seeds 0, 1, 2) measured the cost:
+Three identical runs (0016, 0017, 0018 -- seeds 0, 1, 2) measured the cost **on
+the old exam**:
 
 | metric | mean | sd across identical runs | relative |
 | --- | --- | --- | --- |
@@ -109,57 +145,49 @@ Three identical runs (0016, 0017, 0018 — seeds 0, 1, 2) measured the cost:
 | STOI | 0.8544 | **0.0004** | **0.05%** |
 | SI-SNR | 11.84 | 0.03 | 0.25% |
 
-**PESQ is 13× noisier than STOI in relative terms.** Almost every result in
-this project is around 0.02 PESQ — about one standard deviation, and
+**PESQ is 13x noisier than STOI in relative terms.** Almost every result in
+this project is around 0.02 PESQ -- about one standard deviation, and
 uncallable. The same comparisons on STOI are decisive.
 
-So: **use STOI to detect whether an effect is real; use all three to decide
-whether to adopt it.** STOI and PESQ agreed in sign on every comparison until
-the compression sweep, the first exception (Section 7).
+**This floor has not been re-measured on the new exam.** Until it is, treat
+small differences as indicative. Re-measuring needs two more seeds of the
+current baseline.
 
-### 4.2 The within-run standard deviation is the wrong number
+Use STOI to detect whether an effect is real; use all three to decide whether to
+adopt it (§3).
 
-Evaluations within one run vary by 0.005–0.010 PESQ. That is *evaluation
-wobble*, not run-to-run variation. Earlier versions of these documents quoted it
-as the noise floor for comparing two runs, which understates the real floor by
-three to six times and produced at least one wrong conclusion.
+### 4.2 &nbsp;The within-run standard deviation is the wrong number
 
-### 4.3 Compare converged means, never a run's best score
+Evaluations within one run vary by 0.005-0.010 PESQ. That is *evaluation
+wobble*, not run-to-run variation. Quoting it as the noise floor for comparing
+two runs understates the real floor by three to six times, and did so in earlier
+versions of these documents.
+
+### 4.3 &nbsp;Compare converged means, never a run's best score
 
 PESQ oscillates once converged, so "best of N evaluations" grows with N and a
-longer run wins without being better. This error was made here and produced a
-wrong conclusion about training length.
+longer run wins without being better. Compare the **mean of every evaluation
+from epoch 110 onward** (150-epoch runs) or **from epoch 45** (shorter ones),
+always on matched windows. Models converge by roughly epoch 110 at 9.3 M
+parameters. `EARLY_STOP_PATIENCE` is deliberately 0: it watched validation
+*loss* while results are judged on PESQ, making training length a hidden
+variable.
 
-Compare the **mean of every evaluation from epoch 110 onward** (150-epoch runs)
-or **from epoch 45** (80-epoch runs), with its standard deviation, and always
-compare matched windows.
-
-Models converge by roughly epoch 110 at 9.3 M parameters. `EARLY_STOP_PATIENCE`
-is deliberately 0: early stopping watched validation *loss* while results are
-judged on PESQ, and the two diverge, which made training length a hidden
-variable in comparisons meant to isolate something else.
-
-### 4.4 Deploy `best_pesq.pt`, never `best.pt`
+### 4.4 &nbsp;Deploy `best_pesq.pt`, never `best.pt`
 
 `best.pt` is selected by validation **loss**. On run 0014 that landed on epoch
-26 scoring PESQ 1.703, while the best epoch was 65 scoring 1.832 — deploying it
-would have thrown away 0.13 PESQ already paid for.
+26 scoring PESQ 1.703, while the best epoch was 65 scoring 1.832. `train.py`
+writes `best_pesq.pt` and everything prefers it, falling back to `last.pt`.
+Runs before 0016 have none. Always build models with
+`train.build_from_config`, which reads every shape from the run's own recorded
+config -- constructing from module defaults silently builds the wrong
+architecture for older runs.
 
-`train.py` writes `best_pesq.pt` and everything that loads a model prefers it,
-falling back to `last.pt` then `best.pt`. Runs before 0016 have no
-`best_pesq.pt`.
-
-Always build models with `train.build_from_config`, which reads every shape
-from the run's own recorded config. Constructing from module defaults silently
-builds the wrong architecture for older runs once a default changes.
-
-### 4.5 Loss values are NOT comparable across runs with different loss terms
+### 4.5 &nbsp;Loss values are not comparable across different objectives
 
 A run with an extra loss term has a higher total loss by construction. The
 dashboard's overfitting panel cannot compare two runs whose objectives differ.
 Only the metric panels are comparable.
-
----
 
 ## 5. How the system works
 
@@ -302,59 +330,52 @@ STOI** — the first and still largest real effect in the project.
 
 ## 7. Every experiment, and what it showed
 
-Converged means. Runs 0001–0015 use the epoch-45+ window, runs 0016+ the
-epoch-110+ window. Comparisons are only valid within matched windows.
+**All 26 runs were trained on the old flat U(-5,+15) distribution except 0026.**
+The table below gives each run's score on the **current** frozen set, produced
+by `rescore_runs.py`, so every row is comparable with every other. The
+old-exam column is the run's own converged validation mean at the time, kept
+for reference and **not comparable** with the rest.
 
-| run | what it tested | params | PESQ | STOI | SI-SNR |
+| run | what it tested | old exam | current PESQ | current STOI | current SI-SNR |
 | --- | --- | --- | --- | --- | --- |
-| 0001 | baseline, SI-SNR loss only | 3.0 M | 1.661 | 0.8393 | 11.45 |
-| 0002 | 3× capacity | 9.3 M | 1.674 | 0.8423 | 11.69 |
-| 0003 | a quarter of the data | 3.0 M | 1.652 | 0.8383 | 11.64 |
-| 0004 | half the data | 3.0 M | 1.650 | 0.8362 | 11.50 |
-| 0005 | all the data | 3.0 M | 1.670 | 0.8388 | 11.54 |
-| 0006 | mask ceiling 2.0 (stopped early) | 3.0 M | — | — | — |
-| 0007 | mask ceiling 2.0, aux off | 3.0 M | 1.691 | 0.8425 | 11.67 |
-| 0008 | aux classifier off | 3.0 M | 1.671 | 0.8392 | 11.59 |
-| 0009 | baseline, 114 epochs | 3.0 M | 1.687 | 0.8408 | 11.62 |
-| 0010 | **compressed-magnitude loss, w=200** | 3.0 M | 1.784 | 0.8449 | 11.59 |
-| 0011 | compressed-magnitude loss, w=600 | 3.0 M | 1.799 | 0.8471 | 11.66 |
-| 0012 | compressed-magnitude loss, w=50 | 3.0 M | 1.780 | 0.8460 | 11.66 |
-| 0013 | LSTM sees 33 bands, not 9 | 7.0 M | 1.784 | 0.8424 | 11.35 |
-| 0014 | capacity retest under new loss | 9.3 M | 1.818 | 0.8496 | 11.64 |
-| 0015 | quarter data retest under new loss | 3.0 M | 1.778 | 0.8437 | 11.44 |
-| 0016 | **best model**, 150 epochs, seed 0 | 9.3 M | 1.857 | 0.8543 | 11.86 |
-| 0017 | seed 1, identical to 0016 | 9.3 M | 1.872 | 0.8548 | 11.87 |
-| 0018 | seed 2, identical to 0016 | 9.3 M | 1.847 | 0.8540 | 11.80 |
-| 0019 | mask-vs-ideal-mask loss, w=100 | 9.3 M | 1.794 | 0.8471 | 11.55 |
-| 0020 | compression 0.15 (default 0.3) | 9.3 M | 1.769 | 0.8401 | 11.49 |
-| 0021 | compression 0.5 | 9.3 M | 1.853 | 0.8574 | 11.82 |
-| 0022 | compression 0.7 | 9.3 M | *running* | | |
-| 0023 | compression 1.0 (no squashing) | 9.3 M | *queued* | | |
+| 0016 | 9.3 M, lookahead 2, seed 0 | 1.857 | 2.058 | 0.8823 | 13.01 |
+| 0017 | seed 1, identical | 1.871 | 2.060 | 0.8822 | 12.96 |
+| 0018 | seed 2, identical | 1.847 | 2.042 | 0.8806 | 12.86 |
+| 0019 | mask-vs-ideal-mask loss | 1.794 | — | — | — |
+| 0020 | compression 0.15 | 1.768 | 1.964 | 0.8688 | — |
+| 0021 | compression 0.5 | 1.853 | 2.037 | 0.8827 | — |
+| 0022 | compression 0.7 | 1.825 | 2.010 | 0.8823 | — |
+| 0023 | lookahead 10 | 1.914 | **2.102** | 0.8831 | 13.21 |
+| 0024 | lookahead 4 | 1.855 | 2.081 | 0.8799 | 13.05 |
+| 0025 | **lookahead 6, chosen** | 1.898 | **2.098** | 0.8824 | 13.19 |
+| 0026 | first native 90/10 run | — | *training* | | |
 
-### What is established, against the measured noise floor
+Runs 0001-0015 are the earlier series under the SI-SNR-only objective and are
+kept in `runs/` with their metrics and re-scored numbers.
 
-| comparison | dPESQ | dSTOI | sigma (STOI) | verdict |
+### What is established
+
+Sigma is against the old-exam noise floor, which is the only one measured.
+
+| comparison | dPESQ | dSTOI | sigma | verdict |
 | --- | --- | --- | --- | --- |
 | spectral loss off → on | +0.117 | +0.0074 | +13 | **real and large** |
+| lookahead 2 → 6 | +0.040 | +0.0030 | +7 | **real** |
 | capacity 3.0 M → 9.3 M | +0.019 | +0.0025 | +4.4 | real, small |
 | data full → a quarter | −0.021 | −0.0034 | −6.1 | real, and worse |
-| stride: LSTM 9 → 33 bands | −0.015 | −0.0047 | −8.4 | real, and worse |
-| spectral weight 50 → 600 | +0.019 | +0.0012 | +2.1 | real, marginal |
-| mask loss on | −0.059 | −0.0065 | −16 | **real, and worse** |
-| compression 0.3 → 0.15 | −0.090 | −0.0143 | −36 | **real, much worse** |
-| compression 0.3 → 0.5 | −0.006 | +0.0030 | +8 | **mixed — unresolved** |
+| mask loss on | −0.059 | −0.0065 | −16 | real, and worse |
+| compression 0.3 → 0.15 | −0.090 | −0.0143 | −36 | real, much worse |
+| compression 0.3 → 0.5 | −0.006 | +0.0030 | +8 | mixed, not adopted |
+| lookahead 6 → 10 | +0.004 | +0.0007 | ~2 | **a tie on the new exam** |
 
-Read that last row carefully. Compression 0.5 is decisively better on STOI and
-slightly worse on PESQ. The PESQ loss is *inside* the PESQ noise floor so it is
-not a proven regression, but under the acceptance rule in Section 3 it is **not
-adopted** — it is unresolved pending the 0.7 and 1.0 results.
+**Only two changes ever mattered: fixing the training objective, and giving the
+model more future context.** Both change what the model is *told*, not how big
+it is. Everything else was inside the noise or actively worse.
 
-The spectral **weight** knob is spent: off 1.682, w50 1.780, w200 1.784, w600
-1.799. Almost all the gain comes from having the term at all; twelve times the
-weight buys a fifth as much again. The **compression** knob is not spent, and
-points toward *less* squashing.
-
----
+The lookahead 6 → 10 row is worth reading twice. On the old exam those differed
+by 0.016; on the new one they are 0.004 apart, inside the noise. The extra
+lookahead was earning its keep on the hard clips that are now down-weighted, so
+**lookahead 6 gives the same score for 40 ms less latency**.
 
 ## 8. Ruled out by measurement — do NOT propose these
 
@@ -479,9 +500,12 @@ every existing checkpoint.
 
 ### Mixing
 
-Speech and noise are combined **on the fly during training**, at a random SNR
-uniform in −5 to +15 dB, categories sampled uniformly. The model therefore never
-sees the same example twice.
+Speech and noise are combined **on the fly during training**, categories
+sampled uniformly, at an SNR drawn **90% from U(0,+15) dB and 10% from
+U(-5,0) dB**. The model therefore never sees the same example twice. This
+replaced a flat U(-5,+15) after run 0025; see §4.0, and note that frozen sets
+get an *exact* 90/10 composition rather than a sampled one, because a random
+draw over 143 clips landed at 14% and a yardstick should be exact.
 
 The SNR definition matters and has been "fixed" wrongly before: **noise power is
 measured over the whole window, speech power over the speech-active region
@@ -586,38 +610,41 @@ install.
 
 ## 13. What to do next
 
-**In flight:** runs 0022 (compression 0.7) and 0023 (compression 1.0),
-continuing the sweep upward. 0.15 was 36 sigma worse and 0.5 was 8 sigma better
-on STOI, so the direction is toward less squashing and the peak is bracketed on
-one side only. 1.0 means no squashing at all and is included as the natural
-endpoint: if it wins, the premise that compression helps needs rethinking rather
-than tuning.
+**In flight:** run 0026, the first model whose training and evaluation
+distributions agree. Every run up to 0025 studied for the old exam and is only
+being *scored* on the new one. At epoch 80 it read PESQ 2.107 / STOI 0.8856,
+already above run 0025's 2.098.
 
-**The open question those runs may force.** Compression 0.5 improved STOI and
-slightly reduced PESQ. If that trend continues we have a genuine conflict
-between the metric we can measure precisely (STOI) and one of the metrics we are
-judged on (PESQ), and which governs must be settled before tuning further on it.
-Under the acceptance rule, a setting that costs PESQ is not adopted.
+**Then, in order:**
 
-**After that, in rough order:**
+1. **Re-measure the noise floor on the new exam.** The sd of 0.0004 STOI and
+   0.0124 PESQ that every judgement here rests on was measured on the old
+   mixtures. Two more seeds of the current baseline, about two hours. Until it
+   is done, small differences on the new exam are indicative rather than
+   established.
+2. **Re-run `oracle_ceiling.py`.** The PESQ 3.314 ceiling was computed on the
+   old set. It needs recomputing before it is quoted again. No training needed.
+3. **Update the SIH deck.** It still carries old-exam numbers and asserts
+   ITU-T G.114's 150 ms limit, which 177 ms does not meet.
+4. **Push capacity further**, now established as real but small, and watch for
+   the overfitting run 0015 showed is live.
+5. **The data question.** We know less is worse and have never tested whether
+   more helps, because we have none. A week of effort, so it deserves a
+   decision rather than a launch.
 
-1. **Push capacity further**, now that it is established as real. Small, and it
-   invites overfitting, so it is a supporting change.
-2. **The data question, properly.** We know less is worse; we have never tested
-   whether more helps because we have no more. That is a real decision about
-   effort — collecting or augmenting — and worth discussing before anyone spends
-   a week on it. Note the deferred voice-distortion augmentation
-   (`PROJECT_CONTEXT_4.md` Section 7) is a weaker bet than it looks, since four
-   times less *real* diversity changed nothing under the old objective.
-3. **Anything that reduces the model's uncertainty rather than punishing its
-   hedging.** This is the direction Section 9 points at and the one place a
-   genuinely new idea is needed. Three attempts to force commitment have failed.
+**Not on the list, deliberately:** DCCRN and phase fixes, a bigger model as the
+primary lever, mask post-processing, direct mask supervision, a finer frequency
+view for the LSTM, and more compression in either direction. §8 has the
+measurement that killed each.
 
-**Not on the list, deliberately:** DCCRN and phase-based fixes, a bigger model
-as the primary lever, mask post-processing, direct mask supervision, and a finer
-frequency view for the LSTM. Section 8 has the measurement that killed each.
+### The honest position on the targets
 
----
+On held-out audio, STOI is met. PESQ sits around 1.93 against 2.5 and SI-SNR
+around 13.5 against 15. The two levers that ever worked have both been spent,
+and the remaining knobs are worth hundredths. Closing a 0.58 PESQ gap needs
+something categorical -- substantially more data, or a better mask estimator --
+rather than another knob. That is a submission decision as much as a technical
+one.
 
 ## 14. Standing working rules for this project
 
