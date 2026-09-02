@@ -25,8 +25,11 @@ just changed.
     old distribution carry a _snrU suffix.
 
     Best so far, on held-out audio scored against the new set:
-    run 0025 at PESQ 1.925, STOI 0.8609, SI-SNR 13.52.
+    run 0026 at PESQ 1.934, STOI 0.8630, SI-SNR 13.62.
     STOI clears its 0.85 target; PESQ and SI-SNR do not.
+    0026 is the first run trained AND scored on the new
+    distribution, and it beat 0025 by only +0.004 PESQ --
+    training natively bought far less than the exam change did.
 
     Settled: the objective was the ceiling, not the architecture.
     Phase, mask ceiling, LSTM resolution, mask post-processing,
@@ -34,8 +37,8 @@ just changed.
     measured dead ends. Only two things ever worked -- fixing the
     training objective, and giving the model more future context.
 
-    Next: run 0026, the first model trained AND scored on the
-    new distribution.                                     <-- WE ARE HERE
+    Next: re-measure the noise floor on the new exam
+    (two seeds), then the SIH deck.                       <-- WE ARE HERE
 ```
 
 Everything is in `scripts/model_crn.py`, 3,018,072 parameters, running on the

@@ -1628,14 +1628,37 @@ the old exam and are 0.004 apart on the new one -- inside the PESQ noise floor.
 The extra lookahead was earning its keep on the hard clips that are now
 down-weighted, so lookahead 6 gives the same score for 40 ms less latency.
 
+### Run 0026: the first native run, and how little it bought
+
+Run 0026 is the first model whose training and evaluation distributions agree.
+Same configuration as 0025 in every other respect. On validation, converged
+window epochs 110-150:
+
+| | PESQ | STOI | SI-SNR |
+| --- | --- | --- | --- |
+| 0025, trained on the OLD distribution | 2.0981 | 0.8824 | 13.19 |
+| 0026, trained on the new one | 2.1024 | 0.8855 | 13.26 |
+| difference | +0.004 | +0.0031 | +0.07 |
+
+Nothing regressed, so 0026 is adopted under the acceptance rule and is the
+current best model. But the size matters: **+0.004 PESQ is inside the PESQ
+noise floor**, and only the STOI gain is a signal at all -- against a floor
+measured on the old exam.
+
+The reading is that **training on the harder old distribution cost almost
+nothing when scored on the easier new one.** Almost all of the apparent
+improvement since the change came from the exam, not the model: 1.898 to 1.925
+was the exam, 1.925 to 1.934 was the model. It also suggests training on hard
+examples generalises downward well, which is the direction you want if
+deployment ever sees worse conditions than the test set.
+
 ### Where the targets stand
 
-Best model until run 0026 finishes is run 0025, scored on the held-out testing
-set:
+Best model is run 0026, scored on the held-out testing set:
 
 ```
                      PESQ     STOI    SI-SNR
-held-out testing    1.925   0.8609    13.52
+held-out testing    1.934   0.8630    13.62
 noisy input         1.223   0.7535     6.14
 targets             2.5     0.85      15.0
 ```
@@ -1650,9 +1673,9 @@ targets             2.5     0.85      15.0
   small difference on the new exam is indicative rather than established.
 - **The oracle ceiling.** PESQ 3.314 for an ideal mask was computed on the old
   set. `oracle_ceiling.py` needs re-running.
-- **Every model.** All 26 runs up to 0025 were TRAINED on the old distribution
-  and are only being scored on the new one. Run 0026 is the first whose training
-  and evaluation agree.
+- **Every model up to 0025** was TRAINED on the old distribution and is only
+  scored on the new one. Run 0026 is the first whose training and evaluation
+  agree, and it showed the difference is small.
 
 ### Reverting
 

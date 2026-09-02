@@ -206,16 +206,23 @@ none. Build models with `train.build_from_config`, never from module defaults.
 
 ### The best model, and the ceiling
 
-Run 0025 (trained on the OLD distribution, scored on the current set) is the
-best model until run 0026 finishes. 9.3M parameters, lookahead 6, 176.6 ms
-latency.
+Run 0026 is the best model and the first trained AND scored on the current
+distribution. 9.3M parameters, lookahead 6, 176.6 ms latency, best_pesq.pt from
+epoch 110.
 
 ```
                         PESQ     STOI    SI-SNR
-held-out testing       1.925   0.8609    13.52
+held-out testing       1.934   0.8630    13.62
   noisy input          1.223   0.7535     6.14
   targets              2.5     0.85      15.0
+validation             2.1024  0.8855    13.26
 ```
+
+Native training bought little: run 0025, trained on the OLD distribution and
+only scored on the new one, reads 2.0981 / 0.8824 / 13.19 on validation. 0026
+gains +0.004 PESQ (inside the noise), +0.0031 STOI, +0.07 SI-SNR. Nothing
+regressed so it is adopted, but almost all of the apparent improvement since
+the distribution change came from the exam, not the model.
 
 **STOI now clears its target on held-out audio.** PESQ is short by 0.58 and
 SI-SNR by 1.5.
@@ -278,9 +285,10 @@ out of the model.
 
 ### Next
 
-1. **Run 0026** is training: the first model whose training and evaluation
-   distributions agree. Every earlier run studied for the old exam.
-2. **Re-measure the noise floor** on the new exam, two more seeds.
+1. **Re-measure the noise floor** on the new exam, two more seeds of run 0026's
+   configuration. Every "is this real?" judgement currently leans on a floor
+   measured on the old mixtures, including 0026's own +0.0031 STOI.
+2. **Re-run `oracle_ceiling.py`** on the new set; the 3.314 figure is old-exam.
 3. **Then update the docs and the SIH deck**, which still carry old-exam numbers
    and a claim about ITU-T G.114's 150 ms limit that 176.6 ms does not meet.
 

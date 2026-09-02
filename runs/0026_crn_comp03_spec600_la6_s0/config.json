@@ -58,7 +58,7 @@
     2
   ],
   "epochs": 150,
-  "epochs_completed": null,
+  "epochs_completed": 150,
   "eval_every": 5,
   "git_commit": "4fdc4ee-dirty",
   "grad_clip": 5.0,

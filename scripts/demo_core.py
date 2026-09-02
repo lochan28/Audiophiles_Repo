@@ -27,6 +27,7 @@ import torch
 import model_crn
 import train
 from runlog import RunLog, RUNS_DIR
+import mixing
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -113,13 +114,24 @@ def available_runs():
         out.append({
             "name": name,
             "pesq": peak_pesq(d),
+            # Which SNR distribution this run was trained and scored on.
+            # A peak PESQ from the old flat U(-5,+15) exam is not
+            # comparable with one from the current 90/10 exam -- the change
+            # alone is worth about +0.19 PESQ -- so the sort below groups
+            # by profile first and only then by score.
+            "snr_profile": cfg.get("snr_profile", "unrecorded"),
+            "current_profile": cfg.get("snr_profile") == mixing.SNR_PROFILE,
             "parameters": cfg.get("parameters"),
             "latency_ms": cfg.get("total_latency_ms"),
             "lookahead_ms": cfg.get("lookahead_ms"),
             "lstm_hidden": cfg.get("lstm_hidden"),
             "note": run.notes()[:200],
         })
-    out.sort(key=lambda r: (r["pesq"] is None, -(r["pesq"] or 0)))
+    # Runs on the CURRENT distribution first, then by score within each
+    # group. Ranking the two together would let an old run outscore a new
+    # one purely because it sat an easier or harder exam.
+    out.sort(key=lambda r: (not r["current_profile"],
+                            r["pesq"] is None, -(r["pesq"] or 0)))
     return out
 
 

@@ -43,15 +43,15 @@ flat U(-5,+15) dB; they are now drawn **90% from U(0,15) and 10% from
 U(-5,0)**, and the frozen evaluation sets were rebuilt to match. Read §4.0
 before comparing any two numbers in this project.
 
-Best model until run 0026 finishes is **run 0025**, scored on the current
-held-out testing set -- 125 mixtures never used for training and never used to
-choose the model:
+Best model is **run 0026**, the first whose training and evaluation
+distributions agree. Scored on the current held-out testing set -- 125 mixtures
+never used for training and never used to choose the model:
 
 ```
                  raw input     our model     target     status
-PESQ               1.223         1.925        2.5       short by 0.58
-STOI               0.754         0.861        0.85      MET
-SI-SNR (dB)        6.14         13.52        15.0       short by 1.5
+PESQ               1.223         1.934        2.5       short by 0.57
+STOI               0.754         0.863        0.85      MET
+SI-SNR (dB)        6.14         13.62        15.0       short by 1.4
 latency                         177 ms       500-800    comfortably inside
 ```
 
@@ -60,13 +60,18 @@ acceptance rule (§3) it becomes a constraint to protect rather than a goal to
 chase. PESQ and SI-SNR are the two still short.
 
 On the **validation split** (143 mixtures, also used for checkpoint selection,
-so optimistic) the same model reads PESQ 2.098 / STOI 0.8824 / SI-SNR 13.19.
-Quote the testing numbers externally.
+so optimistic) it reads PESQ 2.1024 / STOI 0.8855 / SI-SNR 13.26. Quote the
+testing numbers externally.
 
-**Run 0026 is training** as of writing: the same configuration, but the first
-model whose training and evaluation distributions agree. Every run up to 0025
-was trained on the old flat distribution and is only being *scored* on the new
-one. At epoch 80 it reads PESQ 2.107 / STOI 0.8856, already above 0025.
+**Training natively on the new distribution bought very little**, and that is
+worth knowing. Run 0025, trained on the old flat distribution and merely scored
+on the new one, reads 2.0981 / 0.8824 / 13.19 on validation. So 0026 gains
++0.004 PESQ (inside the PESQ noise floor), +0.0031 STOI and +0.07 SI-SNR.
+Nothing regressed, so it is adopted under the rule in §3, but the honest
+reading is that **almost all of the apparent improvement since the change came
+from the exam getting easier, not from the model.** It also suggests training
+on harder mixtures generalises downward well, which is the direction you want
+if deployment ever sees worse conditions than the test set.
 
 ### Latency, measured on an RTX 5060 laptop GPU
 
@@ -347,8 +352,8 @@ for reference and **not comparable** with the rest.
 | 0022 | compression 0.7 | 1.825 | 2.010 | 0.8823 | — |
 | 0023 | lookahead 10 | 1.914 | **2.102** | 0.8831 | 13.21 |
 | 0024 | lookahead 4 | 1.855 | 2.081 | 0.8799 | 13.05 |
-| 0025 | **lookahead 6, chosen** | 1.898 | **2.098** | 0.8824 | 13.19 |
-| 0026 | first native 90/10 run | — | *training* | | |
+| 0025 | lookahead 6, trained on old distribution | 1.898 | 2.098 | 0.8824 | 13.19 |
+| **0026** | **first native 90/10 run — best** | — | **2.102** | **0.8855** | **13.26** |
 
 Runs 0001-0015 are the earlier series under the SI-SNR-only objective and are
 kept in `runs/` with their metrics and re-scored numbers.
@@ -610,12 +615,12 @@ install.
 
 ## 13. What to do next
 
-**In flight:** run 0026, the first model whose training and evaluation
-distributions agree. Every run up to 0025 studied for the old exam and is only
-being *scored* on the new one. At epoch 80 it read PESQ 2.107 / STOI 0.8856,
-already above run 0025's 2.098.
+**Run 0026 is finished and is the current best model.** It gained little over
+run 0025 (+0.004 PESQ, inside the noise; +0.0031 STOI), which tells us training
+on the harder old distribution cost almost nothing when scored on the easier
+new one.
 
-**Then, in order:**
+**Next, in order:**
 
 1. **Re-measure the noise floor on the new exam.** The sd of 0.0004 STOI and
    0.0124 PESQ that every judgement here rests on was measured on the old
