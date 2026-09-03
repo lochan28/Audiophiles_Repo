@@ -119,6 +119,29 @@ MASK_LOSS_WEIGHT = 0.0
 # weight of 100 gives this term roughly a third of the spectral term's say.
 # Sensible sweep after the first result: 30 and 300.
 
+SPECTRAL_RESOLUTIONS = (256, 512, 1024)
+# STFT window sizes the compressed-magnitude grader is computed at, in samples.
+# The scores are AVERAGED, not summed, so adding resolutions does not silently
+# multiply this term's weight against SI-SNR -- see the note in spectral_loss.
+#
+# WHY MORE THAN ONE: a window length forces a trade that cannot be escaped.
+# Short windows say precisely WHEN something happened but are vague about WHAT
+# PITCH it was; long windows do the reverse. Our noise splits along exactly
+# that line -- gunfire, mortar, rocket and artillery are bangs a few
+# milliseconds long, while helicopter, engine and ambient are steady hums whose
+# pitch must be separated from the voice. A single 512 window (32 ms) sees each
+# kind about half-well, so an onset smeared by 20 ms is an error the grader
+# currently cannot see and therefore never reports.
+#
+#   256  = 16 ms, 62.5 Hz bins   sharp onsets: gunfire, plosives
+#   512  = 32 ms, 31.2 Hz bins   what runs 0010-0028 used, kept unchanged
+#   1024 = 64 ms, 15.6 Hz bins   steady tones: rotor, engine, and harmonics,
+#                                which sit 3-8 bins apart at 512 and 6-16 at 1024
+#
+# Set to (512,) to reproduce every run up to 0028 exactly.
+# Cost is one extra STFT pair per added resolution, which is unmeasurable
+# against a 17 s epoch.
+
 SPECTRAL_COMPRESSION = 0.3
 # Power the magnitudes are raised to before comparing. 1.0 means raw power,
 # where one loud vowel outweighs a hundred consonants; LOWER flattens the
@@ -270,8 +293,28 @@ def si_snr_loss(est, ref):
     return -si_snr(est, ref).mean()
 
 
-def spectral_loss(est, ref, power=SPECTRAL_COMPRESSION):
-    """Compressed-magnitude distance between two waveforms.
+def _stft_mag(wav, n_fft, hop):
+    """Magnitude spectrogram at an arbitrary resolution.
+
+    `model_crn.to_spectrogram` is hard-wired to the model's own N_FFT and hop
+    because the network depends on that exact framing. The loss does not: it
+    only compares two waveforms, so it is free to look at them through other
+    windows.
+
+    The hop is scaled to keep the model's overlap ratio (160/512), so the 512
+    entry here is IDENTICAL to what to_spectrogram produces. That matters: it
+    makes adding resolutions a purely additive change rather than one that also
+    quietly alters the term we already have.
+    """
+    window = torch.hann_window(n_fft, device=wav.device)
+    spec = torch.stft(wav, n_fft, hop, n_fft, window,
+                      center=True, return_complex=True)
+    return spec.abs()
+
+
+def spectral_loss(est, ref, power=SPECTRAL_COMPRESSION,
+                  resolutions=SPECTRAL_RESOLUTIONS):
+    """Compressed-magnitude distance, averaged over several STFT resolutions.
 
     Both signals are turned into spectrograms and compared bin by bin: for
     every pitch band at every instant, is there the right amount of sound
@@ -285,14 +328,23 @@ def spectral_loss(est, ref, power=SPECTRAL_COMPRESSION):
     together so quiet bins carry real weight -- the same trick the ear plays,
     and the reason this correlates with PESQ and STOI far better than SI-SNR.
 
+    AVERAGED rather than summed across resolutions. Summing would triple this
+    term's pull against SI-SNR when three windows are used, which would confound
+    "more lenses" with "three times the weight" -- and the weight has already
+    been swept, so that confound would be unreadable. Averaging keeps
+    SPECTRAL_LOSS_WEIGHT meaning what it meant before.
+
     Phase is deliberately ignored here. The model does not predict phase, so
     grading it would only add noise to the gradient.
     """
-    est_mag = model_crn.to_spectrogram(est).abs()
-    ref_mag = model_crn.to_spectrogram(ref).abs()
-    est_c = (est_mag + EPS) ** power
-    ref_c = (ref_mag + EPS) ** power
-    return (est_c - ref_c).pow(2).mean()
+    ratio = model_crn.HOP_LENGTH / model_crn.N_FFT
+    total = 0.0
+    for n_fft in resolutions:
+        hop = max(1, int(round(n_fft * ratio)))
+        est_c = (_stft_mag(est, n_fft, hop) + EPS) ** power
+        ref_c = (_stft_mag(ref, n_fft, hop) + EPS) ** power
+        total = total + (est_c - ref_c).pow(2).mean()
+    return total / len(resolutions)
 
 
 def ideal_mask(noisy, clean, mask_max):
@@ -626,6 +678,9 @@ def main():
         "spectral_loss_weight": args.spec_weight,
         "mask_loss_weight": args.mask_weight,
         "spectral_compression": args.compression,
+        "spectral_resolutions": list(SPECTRAL_RESOLUTIONS),
+        # Tagged so a run name says how many lenses the grader used.
+        "n_resolutions": len(SPECTRAL_RESOLUTIONS),
         "grad_clip": GRAD_CLIP, "eval_every": args.eval_every,
         "early_stop_patience": EARLY_STOP_PATIENCE, "seed": args.seed,
         "n_fft": model_crn.N_FFT, "hop_length": model_crn.HOP_LENGTH,
@@ -668,6 +723,7 @@ def main():
     else:
         run = RunLog.create(args.arch, config, notes=args.note,
                             tag_keys=("spectral_compression",
+                                      "n_resolutions",
                                       "spectral_loss_weight",
                                       "lookahead_frames", "seed"))
 

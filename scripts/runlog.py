@@ -100,7 +100,7 @@ def build_tag(config, keys=("lstm_hidden", "lookahead_frames")):
              "spectral_loss_weight": "spec", "mask_max": "mask",
              "lstm_bands": "bands", "data_fraction": "data", "seed": "s",
              "mask_loss_weight": "mloss",
-             "spectral_compression": "comp"}
+             "spectral_compression": "comp", "n_resolutions": "res"}
     parts = []
     for k in keys:
         if k in config and config[k] is not None:

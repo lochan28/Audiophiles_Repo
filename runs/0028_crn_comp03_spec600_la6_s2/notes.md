@@ -1,0 +1,1 @@
+Seed 2 of the three-way replicate on the current 90/10 SNR distribution. With runs 0026 (seed 0) and 0027 (seed 1, run clean) this gives a standard deviation across three identical runs on the current frozen sets, replacing the noise floor measured on the old exam. All three ran straight through with no resumes.
