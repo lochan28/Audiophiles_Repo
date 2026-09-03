@@ -3,6 +3,13 @@
 # Section 6. Never commit it.
 .venv/
 
+# A second, isolated environment holding DeepFilterNet and a CPU-only torch,
+# used to benchmark an external system on our test set. It is separate on
+# purpose: DeepFilterNet pins its own torch versions, and installing it into
+# .venv could downgrade the CUDA 12.8 build the RTX 5060 requires. 672 MB and
+# fully rebuildable -- see the note in scripts/benchmark_external.py.
+.venv_dfn/
+
 # Python bytecode
 __pycache__/
 *.py[cod]
