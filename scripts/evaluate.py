@@ -124,7 +124,11 @@ def evaluate(model, dataset, device, max_clips=None, batch_size=16,
                 "pesq_enhanced": safe_pesq(clean, out),
             }
             per_clip.append(row)
-            if logits is not None:
+            # Only a category head produces something a confusion matrix can
+            # hold. A local-SNR head emits one number per FRAME, so argmax
+            # here would silently index the matrix with a frame number.
+            if logits is not None and getattr(
+                    model, "aux_target", "category") == "category":
                 confusion[m["label"], int(logits[k].argmax())] += 1
 
         if progress:
@@ -157,7 +161,11 @@ def evaluate(model, dataset, device, max_clips=None, batch_size=16,
         "by_category": by_category,
         "classes": classes,
         "confusion": confusion.tolist(),
-        "aux_accuracy": float(np.trace(confusion) / max(confusion.sum(), 1)),
+        "aux_target": getattr(model, "aux_target", "category"),
+        # None rather than 0.0 when there is no classifier: a zero here would
+        # read as "the classifier is at chance", which is a different claim.
+        "aux_accuracy": (float(np.trace(confusion) / confusion.sum())
+                         if confusion.sum() else None),
         "pesq_failures": sum(1 for r in per_clip if r["pesq_enhanced"] is None),
         "seconds": time.perf_counter() - t0,
     }
@@ -183,8 +191,12 @@ def print_report(result, title=""):
         print(f"  {label:<14}" + fmt.format(a) + fmt.format(b).rjust(2)
               + f"{g:>+9.3f}{tgt:>9.2f}  {hit}")
 
-    print(f"\n  noise classifier accuracy: {result['aux_accuracy']:.3f} "
-          f"(chance is {1/len(result['classes']):.3f})")
+    if result.get("aux_accuracy") is not None:
+        print(f"\n  noise classifier accuracy: {result['aux_accuracy']:.3f} "
+              f"(chance is {1/len(result['classes']):.3f})")
+    else:
+        print(f"\n  auxiliary head: {result.get('aux_target', 'none')} "
+              f"- not a classifier, so no accuracy to report")
     if result["pesq_failures"]:
         print(f"  PESQ could not score {result['pesq_failures']} clips; "
               f"they are excluded from the average")

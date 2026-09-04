@@ -1,0 +1,105 @@
+{
+  "arch": "crn",
+  "aux_loss_weight": 0.2,
+  "batch_size": 16,
+  "changed_from": "0028_crn_comp03_spec600_la6_s2",
+  "changes": {
+    "epochs_completed": {
+      "from": 150,
+      "to": null
+    },
+    "inference_ms_per_clip": {
+      "from": 27.610770000046614,
+      "to": null
+    },
+    "n_resolutions": {
+      "from": null,
+      "to": 3
+    },
+    "seed": {
+      "from": 2,
+      "to": 0
+    },
+    "spectral_resolutions": {
+      "from": null,
+      "to": [
+        256,
+        512,
+        1024
+      ]
+    },
+    "total_latency_ms": {
+      "from": 176.92035900000155,
+      "to": null
+    }
+  },
+  "channel_scale": 1.5,
+  "chunk_ms": 100.0,
+  "classes": [
+    "ambient",
+    "assault_rifle",
+    "engine",
+    "heavy_artillery",
+    "helicopter",
+    "mortar",
+    "rocket"
+  ],
+  "data_fraction": 1.0,
+  "device": "cuda",
+  "early_stop_patience": 0,
+  "encoder_channels": [
+    24,
+    48,
+    96,
+    192,
+    192
+  ],
+  "encoder_freq_strides": [
+    2,
+    2,
+    2,
+    2,
+    2
+  ],
+  "epochs": 150,
+  "epochs_completed": 150,
+  "eval_every": 5,
+  "git_commit": "b2ac458-dirty",
+  "grad_clip": 5.0,
+  "hop_length": 160,
+  "inference_ms_per_clip": 22.288400000070396,
+  "learning_rate": 0.0003,
+  "lookahead_frames": 6,
+  "lookahead_ms": 76.0,
+  "lstm_bands": 9,
+  "lstm_hidden": 512,
+  "lstm_layers": 2,
+  "mask_loss_weight": 0.0,
+  "mask_max": 1.0,
+  "n_fft": 512,
+  "n_resolutions": 3,
+  "optimizer": "adamw",
+  "parameters": 9264512,
+  "run_name": "0029_crn_comp03_res3_spec600_la6_s0",
+  "seed": 0,
+  "sequence": 29,
+  "snr_profile": "90% U(0,15) / 10% U(-5,0)",
+  "source_changed": {
+    "runlog.py": "+1 -1",
+    "train.py": "+63 -7"
+  },
+  "spectral_compression": 0.3,
+  "spectral_loss_weight": 600.0,
+  "spectral_resolutions": [
+    256,
+    512,
+    1024
+  ],
+  "started": "2026-09-03T21:04:10",
+  "steps_per_epoch": 80,
+  "stopped_early": null,
+  "total_latency_ms": 176.742946666669,
+  "train_clips": 1292,
+  "val_clips": 143,
+  "weight_decay": 0.01
+}

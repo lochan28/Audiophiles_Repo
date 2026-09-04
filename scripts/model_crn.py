@@ -131,6 +131,27 @@ CLIP_SAMPLES = 48000    # 3.000 s — the frozen 268 mixtures are this length
 HOP_LENGTH = 160        # 10 ms — must divide the 1600-sample chunk evenly
 N_CLASSES = 7           # the seven noise categories on disk
 
+AUX_TARGET = "local_snr"
+# What the auxiliary branch is asked to predict. This is a TRAINING AID only:
+# the branch never feeds the audio path and is deleted before deployment, so
+# it changes what the shared LSTM is pushed to represent, nothing else.
+#
+#   "category"   one guess per clip, which of the 7 noise types is present.
+#                What runs 0001-0029 used. It LEARNS (0.52-0.59 against 0.143
+#                chance) but run 0008 showed it does not help the audio --
+#                knowing the noise is a helicopter does not tell the mask
+#                which bins to close.
+#   "local_snr"  one number per 10 ms frame: how much of this frame is speech,
+#                as speech energy / (speech + noise energy), in [0, 1]. Far
+#                closer to what the mask actually needs. Measured on the
+#                validation split, this target varies MORE within a clip
+#                (sd 0.360) than between clips (sd 0.169), so the head cannot
+#                succeed by reading the clip's overall SNR -- it has to track
+#                speech moment to moment.
+#
+# Old runs record no aux_target and load as "category", which is what they
+# were, so their checkpoints keep working.
+
 CHUNK_SAMPLES = 1600                                # 100 ms streaming chunk
 FRAMES_PER_CHUNK = CHUNK_SAMPLES // HOP_LENGTH      # 10
 FREQ_BINS = N_FFT // 2 + 1                          # 257
@@ -426,19 +447,24 @@ class CRN(nn.Module):
 
     def __init__(self, channels=ENCODER_CHANNELS, lookahead=LOOKAHEAD_FRAMES,
                  hidden=LSTM_HIDDEN, layers=LSTM_LAYERS, mask_max=MASK_MAX,
-                 n_classes=N_CLASSES, freq_strides=ENCODER_FREQ_STRIDES):
+                 n_classes=N_CLASSES, freq_strides=ENCODER_FREQ_STRIDES,
+                 aux_target=AUX_TARGET):
         super().__init__()
         self.encoder = Encoder(channels, lookahead, freq_strides=freq_strides)
         self.memory = Memory(self.encoder.out_features, hidden, layers)
         self.decoder = Decoder(channels, mask_max, freq_strides=freq_strides)
         self.lookahead = self.encoder.lookahead
 
-        # The auxiliary branch. It reads the shared memory and guesses which
-        # noise category is present -- a training aid only. It is never given
-        # anything the deployed system would not have, and it is removed
-        # before deployment (Section 11).
+        # The auxiliary branch. It reads the shared memory and is asked to
+        # describe the noise -- a training aid only. It is never given anything
+        # the deployed system would not have, and it is removed before
+        # deployment (Section 11). See AUX_TARGET for what it predicts.
+        if aux_target not in ("category", "local_snr"):
+            raise ValueError(f"unknown aux_target {aux_target!r}")
+        self.aux_target = aux_target
+        n_out = 1 if aux_target == "local_snr" else n_classes
         self.aux = nn.Sequential(
-            nn.Linear(hidden, 64), nn.ELU(), nn.Linear(64, n_classes))
+            nn.Linear(hidden, 64), nn.ELU(), nn.Linear(64, n_out))
 
     def strip_aux(self):
         """Delete the classifier branch, for deployment.
@@ -454,8 +480,16 @@ class CRN(nn.Module):
         """Magnitude spectrogram (B, T, F) -> mask (B, T, F), logits, state."""
         x, skips = self.encoder(mag)
         x, seq, state = self.memory(x, state)
-        # one guess for the whole clip: the weak label described in Section 12
-        logits = self.aux(seq.mean(dim=1)) if self.aux is not None else None
+        # "category" pools time away and guesses once for the whole clip --
+        # the weak label described in Section 12. "local_snr" keeps the time
+        # axis and answers per frame, which is a far harder question and the
+        # reason it cannot be satisfied by one clip-level guess.
+        if self.aux is None:
+            logits = None
+        elif self.aux_target == "local_snr":
+            logits = self.aux(seq).squeeze(-1)              # (B, T)
+        else:
+            logits = self.aux(seq.mean(dim=1))              # (B, n_classes)
         return self.decoder(x, skips), logits, state
 
     def forward(self, wav, state=None):
@@ -895,13 +929,22 @@ def self_test():
     print("\nstep 5 passed.")
 
     # ------------------------------------------------------------ step 6
-    print("\nstep 6 -- noise classifier head, and the GPU")
+    print(f"\nstep 6 -- auxiliary head ({model.aux_target}), and the GPU")
 
     with torch.no_grad():
         _, _, logits, _ = model(wav_in)
-    print(f"  logits        {tuple(logits.shape)} - one score per noise "
-          f"category, per clip")
-    assert logits.shape == (wav_in.shape[0], N_CLASSES)
+    frames = to_spectrogram(wav_in).shape[1]
+    if model.aux_target == "local_snr":
+        print(f"  logits        {tuple(logits.shape)} - one speech-presence "
+              f"score per 10 ms frame")
+        # One prediction per spectrogram frame, and the SAME frames the mask
+        # is painted on. If these ever disagreed the head would be graded
+        # against the wrong instant.
+        assert logits.shape == (wav_in.shape[0], frames)
+    else:
+        print(f"  logits        {tuple(logits.shape)} - one score per noise "
+              f"category, per clip")
+        assert logits.shape == (wav_in.shape[0], N_CLASSES)
 
     n_aux = sum(p.numel() for p in model.aux.parameters())
     print(f"  aux head      {n_aux:,} parameters "

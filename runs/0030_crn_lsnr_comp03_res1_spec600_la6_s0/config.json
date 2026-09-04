@@ -1,0 +1,116 @@
+{
+  "arch": "crn",
+  "aux_loss_weight": 43.0,
+  "aux_target": "local_snr",
+  "batch_size": 16,
+  "changed_from": "0029_crn_comp03_res3_spec600_la6_s0",
+  "changes": {
+    "aux_loss_weight": {
+      "from": 0.2,
+      "to": 43.0
+    },
+    "aux_target": {
+      "from": null,
+      "to": "local_snr"
+    },
+    "epochs_completed": {
+      "from": 150,
+      "to": null
+    },
+    "inference_ms_per_clip": {
+      "from": 22.288400000070396,
+      "to": null
+    },
+    "n_resolutions": {
+      "from": 3,
+      "to": 1
+    },
+    "parameters": {
+      "from": 9264512,
+      "to": 9264122
+    },
+    "spectral_resolutions": {
+      "from": [
+        256,
+        512,
+        1024
+      ],
+      "to": [
+        512
+      ]
+    },
+    "total_latency_ms": {
+      "from": 176.742946666669,
+      "to": null
+    }
+  },
+  "channel_scale": 1.5,
+  "chunk_ms": 100.0,
+  "classes": [
+    "ambient",
+    "assault_rifle",
+    "engine",
+    "heavy_artillery",
+    "helicopter",
+    "mortar",
+    "rocket"
+  ],
+  "data_fraction": 1.0,
+  "device": "cuda",
+  "early_stop_patience": 0,
+  "encoder_channels": [
+    24,
+    48,
+    96,
+    192,
+    192
+  ],
+  "encoder_freq_strides": [
+    2,
+    2,
+    2,
+    2,
+    2
+  ],
+  "epochs": 150,
+  "epochs_completed": 150,
+  "eval_every": 5,
+  "git_commit": "648a9ce-dirty",
+  "grad_clip": 5.0,
+  "hop_length": 160,
+  "inference_ms_per_clip": 24.200350000319304,
+  "learning_rate": 0.0003,
+  "lookahead_frames": 6,
+  "lookahead_ms": 76.0,
+  "lstm_bands": 9,
+  "lstm_hidden": 512,
+  "lstm_layers": 2,
+  "mask_loss_weight": 0.0,
+  "mask_max": 1.0,
+  "n_fft": 512,
+  "n_resolutions": 1,
+  "optimizer": "adamw",
+  "parameters": 9264122,
+  "run_name": "0030_crn_lsnr_comp03_res1_spec600_la6_s0",
+  "seed": 0,
+  "sequence": 30,
+  "snr_profile": "90% U(0,15) / 10% U(-5,0)",
+  "source_changed": {
+    "evaluate.py": "+16 -4",
+    "model_crn.py": "+55 -12",
+    "runlog.py": "+7 -2",
+    "train.py": "+118 -34"
+  },
+  "spectral_compression": 0.3,
+  "spectral_loss_weight": 600.0,
+  "spectral_resolutions": [
+    512
+  ],
+  "started": "2026-09-03T22:42:05",
+  "steps_per_epoch": 80,
+  "stopped_early": null,
+  "total_latency_ms": 176.80667833334397,
+  "train_clips": 1292,
+  "val_clips": 143,
+  "weight_decay": 0.01
+}

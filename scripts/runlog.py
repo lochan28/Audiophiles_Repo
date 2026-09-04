@@ -100,12 +100,17 @@ def build_tag(config, keys=("lstm_hidden", "lookahead_frames")):
              "spectral_loss_weight": "spec", "mask_max": "mask",
              "lstm_bands": "bands", "data_fraction": "data", "seed": "s",
              "mask_loss_weight": "mloss",
-             "spectral_compression": "comp", "n_resolutions": "res"}
+             "spectral_compression": "comp", "n_resolutions": "res",
+             # The aux target names itself, so it needs no prefix.
+             "aux_target": ""}
+    # Some knobs are words, not numbers, and would be unreadable spelled out.
+    short_value = {"local_snr": "lsnr", "category": "cat"}
     parts = []
     for k in keys:
         if k in config and config[k] is not None:
             v = config[k]
-            v = f"{v:g}".replace(".", "").replace("-", "m")
+            v = (short_value.get(v, v.replace("_", "")) if isinstance(v, str)
+                 else f"{v:g}".replace(".", "").replace("-", "m"))
             parts.append(f"{short.get(k, k)}{v}")
     return "_".join(parts)
 

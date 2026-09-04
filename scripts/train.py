@@ -72,8 +72,10 @@ OPTIMIZER = "adamw"
 # comparison of all three; this is the knob for it.
 
 AUX_LOSS_WEIGHT = model_crn.AUX_LOSS_WEIGHT
-# How loudly the noise-classifier branch argues. 0.0 switches it off, which is
-# the experiment that answers whether it helps at all.
+# How loudly the auxiliary branch argues. 0.0 switches it off. What the branch
+# is asked to predict is model_crn.AUX_TARGET; this is only how much it weighs.
+# Size it with --loss-scales rather than by eye -- the printed VALUES of two
+# loss terms say nothing about which one actually steers the model.
 
 SPECTRAL_LOSS_WEIGHT = 600.0
 # How loudly the compressed-magnitude grader argues, against SI-SNR's 1.0.
@@ -119,28 +121,38 @@ MASK_LOSS_WEIGHT = 0.0
 # weight of 100 gives this term roughly a third of the spectral term's say.
 # Sensible sweep after the first result: 30 and 300.
 
-SPECTRAL_RESOLUTIONS = (256, 512, 1024)
+SPECTRAL_RESOLUTIONS = (512,)
 # STFT window sizes the compressed-magnitude grader is computed at, in samples.
 # The scores are AVERAGED, not summed, so adding resolutions does not silently
 # multiply this term's weight against SI-SNR -- see the note in spectral_loss.
 #
-# WHY MORE THAN ONE: a window length forces a trade that cannot be escaped.
-# Short windows say precisely WHEN something happened but are vague about WHAT
-# PITCH it was; long windows do the reverse. Our noise splits along exactly
-# that line -- gunfire, mortar, rocket and artillery are bangs a few
-# milliseconds long, while helicopter, engine and ambient are steady hums whose
-# pitch must be separated from the voice. A single 512 window (32 ms) sees each
-# kind about half-well, so an onset smeared by 20 ms is an error the grader
-# currently cannot see and therefore never reports.
+# MEASURED AND REJECTED. Run 0029 used (256, 512, 1024) against the three-seed
+# control 0026/0027/0028 and lost on every metric at once:
 #
-#   256  = 16 ms, 62.5 Hz bins   sharp onsets: gunfire, plosives
-#   512  = 32 ms, 31.2 Hz bins   what runs 0010-0028 used, kept unchanged
-#   1024 = 64 ms, 15.6 Hz bins   steady tones: rotor, engine, and harmonics,
-#                                which sit 3-8 bins apart at 512 and 6-16 at 1024
+#       PESQ  2.1077 -> 2.0752   -4.6 sigma
+#       STOI  0.8859 -> 0.8837   -5.4 sigma
+#     SI-SNR  13.271 -> 13.154   -4.7 sigma
 #
-# Set to (512,) to reproduce every run up to 0028 exactly.
-# Cost is one extra STFT pair per added resolution, which is unmeasurable
-# against a 17 s epoch.
+# The idea was that one window length forces a trade -- short windows say
+# precisely WHEN a sound happened but are vague about its PITCH, long windows
+# do the reverse -- and our noise splits along exactly that line, gunfire and
+# mortar on one side, rotor and engine hum on the other.
+#
+# The likely reason it failed anyway: the model emits one gain per bin on the
+# 512/160 grid, so an error the 512 lens reports has a knob that fixes it,
+# while an error seen only at 256 or 1024 is smeared across bins the mask
+# controls separately. Averaging cut the actionable feedback to a third of its
+# strength and replaced the rest with feedback the operator cannot cleanly act
+# on. This is a hypothesis, not a measurement.
+#
+# Multi-resolution spectral loss is standard practice in speech enhancement.
+# It is the third borrowed technique to lose here, after finer LSTM bands
+# (run 0013) and direct mask supervision (run 0019). Do not retry it without
+# a reason the above explanation does not already cover.
+#
+# The machinery is kept because it costs nothing at (512,) -- one lens, one
+# STFT pair, byte-identical to the pre-0029 loss (verified 0.26467431 both
+# ways). Anyone re-testing this should change the tuple, not the code.
 
 SPECTRAL_COMPRESSION = 0.3
 # Power the magnitudes are raised to before comparing. 1.0 means raw power,
@@ -211,7 +223,8 @@ def build_crn(**over):
         hidden=over.get("lstm_hidden", model_crn.LSTM_HIDDEN),
         layers=over.get("lstm_layers", model_crn.LSTM_LAYERS),
         mask_max=over.get("mask_max", model_crn.MASK_MAX),
-        freq_strides=over.get("freq_strides", model_crn.ENCODER_FREQ_STRIDES))
+        freq_strides=over.get("freq_strides", model_crn.ENCODER_FREQ_STRIDES),
+        aux_target=over.get("aux_target", model_crn.AUX_TARGET))
 
 
 # The registry. A new architecture is one entry here plus its model file.
@@ -246,6 +259,10 @@ def build_from_config(cfg, device):
         lookahead_frames=cfg.get("lookahead_frames",
                                  model_crn.LOOKAHEAD_FRAMES),
         mask_max=cfg.get("mask_max", model_crn.MASK_MAX),
+        # Runs before 0030 predate AUX_TARGET and all had the 7-way category
+        # head; falling back to the current default would build a 1-output
+        # head and refuse to load their checkpoints.
+        aux_target=cfg.get("aux_target", "category"),
         freq_strides=strides).to(device)
 
 
@@ -347,6 +364,54 @@ def spectral_loss(est, ref, power=SPECTRAL_COMPRESSION,
     return total / len(resolutions)
 
 
+def local_snr_target(noisy, clean):
+    """How much of each 10 ms frame is speech, as a number in [0, 1].
+
+    The mixture is built as speech + scaled noise, and both halves are rescaled
+    together if the sum would clip, so `noisy - clean` recovers the noise
+    EXACTLY. Verified on the frozen validation split: the SNR implied by that
+    residual matches the recorded SNR to two decimals. Nothing has to be
+    plumbed through the data pipeline to get this.
+
+    Per frame, speech energy / (speech + noise energy). Two reasons for this
+    form rather than SNR in decibels:
+
+    - Decibels are unbounded and useless here. Measured over the validation
+      split the per-frame value runs from -140 dB to +140 dB, because a frame
+      of pure silence divides by nothing. A squared error on that is decided
+      entirely by frames where the answer is arbitrary.
+    - This ratio is the frame-level version of exactly what the mask computes
+      per bin, and it needs no invented clamping constants.
+
+    0 means the frame is all noise, 1 means it is all speech, 0.5 is 0 dB.
+    """
+    n_spec = model_crn.to_spectrogram(noisy - clean).abs().pow(2).sum(-1)
+    s_spec = model_crn.to_spectrogram(clean).abs().pow(2).sum(-1)
+    return s_spec / (s_spec + n_spec + EPS)          # (B, T)
+
+
+def aux_term(model, logits, noisy, clean, label):
+    """The auxiliary loss, and a readable score, for whichever target is set.
+
+    Returns (loss, score, score_name). The score is only for reporting: how
+    often the category is right, or the mean absolute error in speech-presence.
+    """
+    if model.aux_target == "local_snr":
+        target = local_snr_target(noisy, clean)
+        loss = nn.functional.binary_cross_entropy_with_logits(logits, target)
+        # Cross-entropy rather than squared error because the target is a
+        # probability and the head ends in a sigmoid: the pair has a clean
+        # gradient of (prediction - target), where MSE through a sigmoid goes
+        # flat exactly where the target spends 47% of its time, at the ends.
+        with torch.no_grad():
+            score = float((torch.sigmoid(logits) - target).abs().mean())
+        return loss, score, "mae"
+    loss = nn.functional.cross_entropy(logits, label)
+    with torch.no_grad():
+        score = float((logits.argmax(1) == label).float().mean())
+    return loss, score, "accuracy"
+
+
 def ideal_mask(noisy, clean, mask_max):
     """The mask the model should have drawn, from audio it never sees.
 
@@ -384,15 +449,17 @@ def loss_scale_report(model, loader, device, n_batches=4):
     # after, so the batch-norm running statistics this touches do not matter.
     model.train()
     rows = []
-    for i, (noisy, clean, _) in enumerate(loader):
+    for i, (noisy, clean, label) in enumerate(loader):
         if i >= n_batches:
             break
         noisy, clean = noisy.to(device), clean.to(device)
-        est, mask, _, _ = model(noisy)
+        est, mask, logits, _ = model(noisy)
         terms = {"si_snr": si_snr_loss(est, clean),
                  "spectral": spectral_loss(est, clean),
                  "mask": mask_loss(mask, noisy, clean,
-                                   model.decoder.mask_max)}
+                                   model.decoder.mask_max),
+                 "aux": aux_term(model, logits, noisy, clean,
+                                 label.to(device))[0]}
         out = {}
         for name, term in terms.items():
             model.zero_grad(set_to_none=True)
@@ -405,12 +472,12 @@ def loss_scale_report(model, loader, device, n_batches=4):
 
     print(f"{'term':<12}{'value':>12}{'grad norm':>14}")
     grads = {}
-    for name in ("si_snr", "spectral", "mask"):
+    for name in ("si_snr", "spectral", "mask", "aux"):
         v = float(np.mean([r[name][0] for r in rows]))
         g = float(np.mean([r[name][1] for r in rows]))
         grads[name] = g
         print(f"{name:<12}{v:>12.5f}{g:>14.5f}")
-    for name in ("spectral", "mask"):
+    for name in ("spectral", "mask", "aux"):
         w = grads["si_snr"] / max(grads[name], EPS)
         print(f"weight that makes {name} pull as hard as si_snr: {w:.1f}")
     return grads
@@ -430,8 +497,8 @@ def run_epoch(model, loader, device, optimizer=None, aux_weight=AUX_LOSS_WEIGHT,
 
     totals = {"loss": 0.0, "audio_loss": 0.0, "spec_loss": 0.0,
               "mask_loss": 0.0, "aux_loss": 0.0,
-              "si_snr": 0.0, "aux_correct": 0.0, "n": 0}
-    ce = nn.CrossEntropyLoss()
+              "si_snr": 0.0, "aux_score": 0.0, "n": 0}
+    score_name = "accuracy"
 
     for noisy, clean, label in loader:
         noisy = noisy.to(device, non_blocking=True)
@@ -447,8 +514,12 @@ def run_epoch(model, loader, device, optimizer=None, aux_weight=AUX_LOSS_WEIGHT,
             mloss = (mask_loss(mask, noisy, clean, model.decoder.mask_max)
                      if mask_weight
                      else torch.zeros((), device=device))
-            aux_loss = ce(logits, label) if (logits is not None and aux_weight) \
-                else torch.zeros((), device=device)
+            if logits is not None and aux_weight:
+                aux_loss, aux_score, score_name = aux_term(
+                    model, logits, noisy, clean, label)
+            else:
+                aux_loss = torch.zeros((), device=device)
+                aux_score = 0.0
             loss = (audio_loss + spec_weight * spec_loss
                     + mask_weight * mloss + aux_weight * aux_loss)
 
@@ -470,8 +541,7 @@ def run_epoch(model, loader, device, optimizer=None, aux_weight=AUX_LOSS_WEIGHT,
         totals["aux_loss"] += aux_loss.detach().item() * n
         with torch.no_grad():
             totals["si_snr"] += float(si_snr(est, clean).sum())
-            if logits is not None:
-                totals["aux_correct"] += float((logits.argmax(1) == label).sum())
+        totals["aux_score"] += aux_score * n
 
     n = max(totals["n"], 1)
     return {"loss": totals["loss"] / n,
@@ -480,7 +550,13 @@ def run_epoch(model, loader, device, optimizer=None, aux_weight=AUX_LOSS_WEIGHT,
             "mask_loss": totals["mask_loss"] / n,
             "aux_loss": totals["aux_loss"] / n,
             "si_snr": totals["si_snr"] / n,
-            "aux_accuracy": totals["aux_correct"] / n}
+            # One of these is always None: the two targets are not comparable
+            # and merging them into one column would make old and new runs
+            # look like they were measuring the same thing.
+            "aux_accuracy": (totals["aux_score"] / n
+                             if score_name == "accuracy" else None),
+            "aux_mae": (totals["aux_score"] / n
+                        if score_name == "mae" else None)}
 
 
 def measure_inference_ms(model, device):
@@ -584,6 +660,9 @@ def main():
     ap.add_argument("--batch-size", type=int, default=BATCH_SIZE)
     ap.add_argument("--lr", type=float, default=LEARNING_RATE)
     ap.add_argument("--aux-weight", type=float, default=AUX_LOSS_WEIGHT)
+    ap.add_argument("--aux-target", default=model_crn.AUX_TARGET,
+                    choices=("category", "local_snr"),
+                    help="what the auxiliary branch predicts")
     ap.add_argument("--spec-weight", type=float, default=SPECTRAL_LOSS_WEIGHT,
                     help="weight on the compressed-magnitude loss; 0 "
                          "reproduces the SI-SNR-only runs up to 0009")
@@ -646,6 +725,7 @@ def main():
     model = ARCHITECTURES[args.arch](mask_max=args.mask_max,
                                      encoder_channels=channels,
                                      lstm_hidden=args.lstm_hidden,
+                                     aux_target=args.aux_target,
                                      lookahead_frames=args.lookahead).to(device)
     n_params = sum(p.numel() for p in model.parameters())
 
@@ -675,6 +755,7 @@ def main():
         "data_fraction": args.data_fraction, "steps_per_epoch": STEPS_PER_EPOCH,
         "learning_rate": args.lr, "weight_decay": WEIGHT_DECAY,
         "optimizer": OPTIMIZER, "aux_loss_weight": args.aux_weight,
+        "aux_target": args.aux_target,
         "spectral_loss_weight": args.spec_weight,
         "mask_loss_weight": args.mask_weight,
         "spectral_compression": args.compression,
@@ -722,7 +803,7 @@ def main():
         print(f"resumed {run.name} at epoch {start_epoch}")
     else:
         run = RunLog.create(args.arch, config, notes=args.note,
-                            tag_keys=("spectral_compression",
+                            tag_keys=("aux_target", "spectral_compression",
                                       "n_resolutions",
                                       "spectral_loss_weight",
                                       "lookahead_frames", "seed"))
@@ -743,7 +824,8 @@ def main():
           f"100 ms chunk + {infer_ms * 100 / 3000:.2f} ms compute")
     print(f"samples       clips {sample_idx} tracked every {args.eval_every} "
           f"epochs\n")
-    print(f"{'ep':>4} {'train':>9} {'val':>9} {'si-snr':>8} {'aux':>6} "
+    aux_col = "mae" if args.aux_target == "local_snr" else "acc"
+    print(f"{'ep':>4} {'train':>9} {'val':>9} {'si-snr':>8} {aux_col:>6} "
           f"{'lr':>9} {'sec':>6}")
 
     # A run that ends short should say why in its own config, so a later
@@ -789,6 +871,7 @@ def main():
                "train_aux_loss": tr["aux_loss"], "val_aux_loss": va["aux_loss"],
                "train_aux_accuracy": tr["aux_accuracy"],
                "val_aux_accuracy": va["aux_accuracy"],
+               "train_aux_mae": tr["aux_mae"], "val_aux_mae": va["aux_mae"],
                "learning_rate": lr_now, "epoch_seconds": secs,
                "inference_ms": measure_inference_ms(model, device)}
         if device.type == "cuda":
@@ -807,7 +890,8 @@ def main():
 
         flag = " *" if improved else ""
         print(f"{epoch:>4} {tr['loss']:>9.4f} {va['loss']:>9.4f} "
-              f"{va['si_snr']:>8.2f} {va['aux_accuracy']:>6.2f} "
+              f"{va['si_snr']:>8.2f} "
+              f"{(va['aux_mae'] if va['aux_mae'] is not None else va['aux_accuracy']):>6.2f} "
               f"{lr_now:>9.2e} {secs:>6.1f}{flag}")
 
         if epoch % args.eval_every == 0 or epoch == args.epochs:
