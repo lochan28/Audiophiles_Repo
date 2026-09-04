@@ -1683,3 +1683,193 @@ The commit before this change is tagged `pre-snr-change`. `git reset --hard
 pre-snr-change` restores the previous state exactly, including the original
 frozen mixtures and run names.
 
+
+## 22. The feedback experiments, and what closing them told us
+
+Runs 0029 to 0034 tested every remaining idea for changing **what the model is
+told during training**. That was the last untried lever: architecture, phase,
+capacity, mask post-processing and deep filtering had all been closed earlier.
+All four are now closed too, and the pattern across them says more than any one
+result.
+
+Every number below is a converged mean over epochs >= 110, judged against the
+three-seed control mean of **PESQ 2.1077 / STOI 0.8859 / SI-SNR 13.271** and the
+noise floor measured on the same exam (sd 0.0061 / 0.0004 / 0.0218, runs
+0026/0027/0028).
+
+### 22.1 Multi-resolution spectral loss -- run 0029, rejected
+
+The compressed-magnitude grader computed at 256, 512 and 1024 sample windows
+instead of 512 alone, averaged so the term's weight against SI-SNR was
+unchanged.
+
+    PESQ  2.1077 -> 2.0752   -4.6 sigma
+    STOI  0.8859 -> 0.8837   -5.4 sigma
+  SI-SNR  13.271 -> 13.154   -4.7 sigma
+
+Three metrics moving together is not noise. The likely reason: the model emits
+one gain per bin on the 512/160 grid, so an error the 512 lens reports has a
+knob that fixes it, while an error visible only at 256 or 1024 is smeared
+across bins the mask controls separately. Averaging cut the actionable feedback
+to a third and replaced the rest with feedback the operator cannot act on.
+
+`SPECTRAL_RESOLUTIONS` is back to `(512,)`, verified byte-identical to the
+pre-0029 loss.
+
+### 22.2 Local-SNR auxiliary head -- runs 0030 and 0031, rejected
+
+The auxiliary branch was changed from guessing the noise category once per clip
+to predicting, for every 10 ms frame, how much of that frame is speech. Run at
+two weights, because the gradient report showed the branch had always been far
+quieter than anyone had checked -- at the old setting it was about 0.1% of the
+total gradient.
+
+    0030, weight 43     PESQ -1.3   STOI -1.8   SI-SNR +0.8  sigma
+    0031, weight 0.53   PESQ +0.6   STOI -3.5   SI-SNR -2.4  sigma
+
+The head itself learned superbly: mean absolute error 0.074 and 0.095, against
+0.370 for the best fixed guess and 0.322 for the best per-clip guess. It did its
+job and the audio did not care.
+
+### 22.3 The probe that explains 22.2 -- and closes it at every weight
+
+`scripts/probe_local_snr.py` freezes run 0026, which was trained with the
+CATEGORY head and never saw a local-SNR target, and fits only a small readout on
+top of its frozen representation:
+
+    guess one constant forever            0.3701
+    random init, linear      (513 par)    0.3517
+    random init, mlp      (32,897 par)    0.2750
+    trained 0026, linear     (513 par)    0.1242
+    trained 0026, mlp     (32,897 par)    0.1090
+
+**A single 513-parameter matrix recovers speech presence to 0.124 from a model
+that was never taught it.** The random-init control sits near the baseline, so
+this is learned rather than free -- the model worked it out unprompted because it
+needs it to paint the mask.
+
+The sharper reading is not "it already knew". Compare the SAME architecture in
+both roles: 0.109 as a probe, 0.074 trained in. Teaching it explicitly DID make
+the representation about a third more informative, and the audio still did not
+move. Speech-presence knowledge is not the bottleneck, so no weight setting
+could have helped. This is why 22.2 is closed at every weight rather than at
+the two that were tried.
+
+### 22.4 MetricGAN -- runs 0032 to 0034, rejected
+
+A learned critic that predicts PESQ and, unlike PESQ, can say which way to move.
+Built with three guards against the generator finding loopholes: spectral
+normalisation to keep the score surface smooth, continuous retraining on the
+generator's current output, and a trust dial that measures the critic's
+out-of-sample error every batch and turns its influence down as that widens.
+
+Two static tests came first.
+
+**The gate** (`scripts/critic_gate.py`), pass marks written before the run:
+
+    mean absolute error, PESQ    0.2193    pass mark 0.15    FAILED
+    rank correlation, Spearman   0.9605    pass mark 0.90    passed
+
+**The direction test** (`scripts/critic_direction.py`), which measures the
+property MetricGAN actually depends on -- not whether the critic predicts PESQ
+but whether FOLLOWING it raises real PESQ:
+
+    step 0.01   critic  +0.0076 real PESQ, 97% of clips improved
+                random  +0.0007,           45%
+    step 0.30   critic  +0.0489,           81%
+                random  -0.0547,           17%
+
+Uphill at every step size and beating a random nudge more than tenfold. The
+teaching signal is real.
+
+**Run 0032**, critic present from epoch 1 at gradient-matched weight 14:
+
+    PESQ -1.4   STOI -5.9   SI-SNR -8.9  sigma
+
+And the critic never cheated. Gap 0.162 to 0.244 across 150 epochs, trust never
+below 1.00, predicted tracking actual within +-0.07 with no drift. The guards
+never had to fire. The model followed honest advice and got worse.
+
+**Runs 0033 and 0034**, fine-tuning run 0026 for 20 epochs at 3e-5 with the
+critic, against a matched control fine-tuned identically without it -- necessary
+because waking a converged model up moves it regardless of any critic:
+
+    PESQ   +0.0127   +1.5 sigma
+    STOI   -0.0008   -1.5 sigma
+    SI-SNR -0.0600   -1.9 sigma
+
+PESQ higher at all four checkpoints, SI-SNR lower at all four. Each sigma is
+modest but the sign never flips, so the trade is real. This is MetricGAN
+behaving exactly as documented: it raises PESQ specifically, at the cost of
+other metrics. The acceptance rule rejects it, and so should judgement --
+SI-SNR is the metric we are furthest from target on.
+
+### 22.5 What the four together actually say
+
+**We are ON a trade-off curve, not below one.** Until 0033 the working
+assumption was that the model was simply not good enough yet and the right
+change would lift everything together. Buying PESQ now measurably costs SI-SNR.
+The earlier nulls were not near-misses waiting for a better version; they were
+pushing against a wall.
+
+**But the wall is not architectural.** The ideal per-bin mask reaches PESQ 3.389
+on the test set using this same architecture and this same reused phase. The
+answer is expressible by what was built. The gap from 1.94 to 3.39 is a
+LEARNING gap, not a representational one.
+
+**And it is not for lack of information.** 22.3 shows the model already encodes,
+linearly, the thing we kept trying to teach it.
+
+What is left is the diagnosis `mask_diagnosis.py` reached long ago and nothing
+since has moved: **the model hedges.** Its mask correlates 0.617 with the ideal
+one and pulls toward the middle. It knows enough to commit and does not. Every
+squared-error grader that can be written is MINIMISED by hedging, which is why
+direct mask supervision was 16 sigma worse and why the pattern repeated. The
+critic is the first grader in this project that is not won by playing safe, and
+it moved PESQ -- by about 2% of the gap, while charging SI-SNR for it.
+
+### 22.6 The external calibration, which should frame all of the above
+
+On the frozen test set, scored by our own code:
+
+    system                     PESQ      STOI    SI-SNR
+    noisy input               1.230    0.7810      6.19
+    ours (run 0026)           1.944    0.8625     13.66
+    DeepFilterNet v0.5.6      1.947    0.8508     11.67
+    ideal per-bin mask        3.389         -         -
+    target                    2.500    0.8500     15.00
+
+**A published, well-regarded system lands within 0.003 PESQ of us on our own
+audio, and we beat it clearly on the other two metrics.** The honest reading of
+these six runs is therefore not "our model is weak". It is that we are at the
+level of published state of the art on this data.
+
+Which puts a question on the table that has not been asked since the project
+started: the 2.50 PESQ target was set before anything was known about how hard
+this particular mixture set is. Nothing has yet demonstrated that 2.50 is
+achievable on 3-second clips at these SNRs within a 177 ms latency budget. The
+evidence increasingly suggests the target, rather than the model, may be the
+miscalibrated part. That is a claim about the problem statement and is for the
+team to make or reject, not for the code.
+
+### 22.7 Where the MetricGAN code lives
+
+Master deliberately does not carry it. The full implementation -- the critic,
+the adversarial loop, the trust dial, the gate and the direction test -- is on
+the `metricgan` branch, and the state before any of it is tagged
+`pre-metricgan`. Three pieces were kept on master because they are useful
+independently of MetricGAN:
+
+- `scripts/pesq_labels.py`, which scores PESQ across worker processes and is
+  5.7x faster than serial. Nothing on master uses it yet; wiring it into
+  `evaluate.py` and `rescore_runs.py` is an easy win.
+- `train.py --init-from RUN`, which starts a NEW run from another run's trained
+  weights. Distinct from `--resume`, which continues a run in place and would
+  overwrite the source run's own metrics and checkpoints.
+- The `AUX_TARGET` default returned to `"category"`, since `"local_snr"` was
+  measured neutral-to-negative in 22.2.
+
+The run records for 0032-0034 are on master like every other experiment. Note
+that `runs/*/source/` snapshots only the five core scripts, so those three runs
+cannot be reproduced from their snapshot alone -- the critic and loop code has
+to come from the branch.

@@ -615,41 +615,77 @@ install.
 
 ## 13. What to do next
 
-**Run 0026 is finished and is the current best model.** It gained little over
-run 0025 (+0.004 PESQ, inside the noise; +0.0031 STOI), which tells us training
-on the harder old distribution cost almost nothing when scored on the easier
-new one.
+**Run 0026 is still the best model, and every idea on the previous list has
+been closed by measurement.** Runs 0029 to 0034 tested the last untried lever --
+changing what the model is TOLD during training -- across four approaches.
+PROJECT_CONTEXT_4.md Section 22 has the full write-up; the short version:
 
-**Next, in order:**
+| tried | outcome |
+| --- | --- |
+| Multi-resolution spectral loss (0029) | -4.6 sigma PESQ, rejected |
+| Local-SNR auxiliary head (0030, 0031) | null at both a whisper and a shout |
+| MetricGAN from scratch (0032) | worse on all three metrics |
+| MetricGAN as a fine-tune (0033, 0034) | works: +0.0127 PESQ for -0.060 SI-SNR |
 
-1. **Re-measure the noise floor on the new exam.** The sd of 0.0004 STOI and
-   0.0124 PESQ that every judgement here rests on was measured on the old
-   mixtures. Two more seeds of the current baseline, about two hours. Until it
-   is done, small differences on the new exam are indicative rather than
-   established.
-2. **Re-run `oracle_ceiling.py`.** The PESQ 3.314 ceiling was computed on the
-   old set. It needs recomputing before it is quoted again. No training needed.
-3. **Update the SIH deck.** It still carries old-exam numbers and asserts
-   ITU-T G.114's 150 ms limit, which 177 ms does not meet.
-4. **Push capacity further**, now established as real but small, and watch for
-   the overfitting run 0015 showed is live.
-5. **The data question.** We know less is worse and have never tested whether
-   more helps, because we have none. A week of effort, so it deserves a
-   decision rather than a launch.
+### The three findings that should shape what happens next
+
+**We are on a trade-off curve, not below one.** The fine-tuned MetricGAN run
+bought PESQ and paid for it in SI-SNR, consistently, at every checkpoint. Gains
+in one metric now measurably cost another, which means the earlier nulls were
+not near-misses waiting for a better version.
+
+**The wall is not architectural, and it is not missing information.** An ideal
+per-bin mask reaches PESQ 3.389 using this same architecture and this same
+reused phase, so the answer is expressible by what was built. And
+`scripts/probe_local_snr.py` showed a 513-parameter linear readout recovers
+speech presence to 0.124 from a frozen run 0026 that was never taught it,
+against 0.352 on an untrained model -- the representation already holds what we
+kept trying to give it. What remains is that the model HEDGES, and every
+squared-error grader that can be written is minimised by hedging.
+
+**We are level with published state of the art on this data.** DeepFilterNet
+v0.5.6 scores PESQ 1.947 on our frozen test set against our 1.944, and we beat
+it on STOI (0.8625 vs 0.8508) and SI-SNR (13.66 vs 11.67). This is the single
+most useful fact for the submission, and it reframes six runs of nulls: the
+model is not weak.
+
+### What is actually left
+
+1. **Decide whether the 2.50 PESQ target is achievable on this data.** It was
+   set before anything was known about how hard this mixture set is, and
+   nothing since has demonstrated it is reachable on 3-second clips at these
+   SNRs within 177 ms. A published system is where we are. This is a
+   submission-level judgement, not a coding task, and it should be made
+   explicitly rather than by continuing to grind.
+2. **More training data.** The one lever never tested, because we have none.
+   Less is measurably worse; more is unknown. A week of effort, so it deserves
+   a decision rather than a launch.
+3. **A larger model with a relaxed latency budget.** Capacity is a real but
+   small lever at the current size, and 177 ms is already over the ITU-T G.114
+   150 ms figure the deck quotes. If the budget can move, this becomes a
+   different problem.
+4. **Update the SIH deck.** It still carries old-exam numbers, the 150 ms
+   claim, and the disproven auxiliary-head assertion.
+5. **Wire `scripts/pesq_labels.py` into `evaluate.py` and `rescore_runs.py`.**
+   It scores PESQ across worker processes, 5.7x faster than serial, and is
+   already on master. Small, safe, and it speeds up every future measurement.
 
 **Not on the list, deliberately:** DCCRN and phase fixes, a bigger model as the
 primary lever, mask post-processing, direct mask supervision, a finer frequency
-view for the LSTM, and more compression in either direction. §8 has the
-measurement that killed each.
+view for the LSTM, more compression in either direction, deep filtering,
+multi-resolution spectral loss, the local-SNR auxiliary head, and MetricGAN.
+Section 8 and PROJECT_CONTEXT_4.md Section 22 carry the measurement that killed
+each.
 
 ### The honest position on the targets
 
-On held-out audio, STOI is met. PESQ sits around 1.93 against 2.5 and SI-SNR
-around 13.5 against 15. The two levers that ever worked have both been spent,
-and the remaining knobs are worth hundredths. Closing a 0.58 PESQ gap needs
-something categorical -- substantially more data, or a better mask estimator --
-rather than another knob. That is a submission decision as much as a technical
-one.
+On held-out audio STOI is met. PESQ sits at 1.93 against 2.5 and SI-SNR at
+13.62 against 15. Every lever that ever worked has been spent, every remaining
+one has been measured and closed, and the model is level with published work on
+this data. Closing a 0.57 PESQ gap now needs something categorical -- much more
+data, a bigger model with more latency, or a revised target -- rather than
+another knob. That is a submission decision as much as a technical one, and it
+is the decision the project is now waiting on.
 
 ## 14. Standing working rules for this project
 

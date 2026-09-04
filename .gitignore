@@ -33,3 +33,11 @@ logs/figures/
 runs/*/checkpoints/
 runs/*/samples/
 runs/*/metrics.csv
+
+# Safety copies of trained weights taken before a risky change. These are the
+# one thing git does NOT protect -- runs/*/checkpoints/ is ignored above, so a
+# checkpoint exists in exactly one place on disk. Backed up as files and hashed
+# before anything risky starts. Not committed: they are ~37 MB each and are
+# byte-identical to a file already on disk, so committing them would double the
+# storage without adding a second point of failure.
+backups/

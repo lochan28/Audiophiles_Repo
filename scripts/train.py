@@ -691,6 +691,10 @@ def main():
     ap.add_argument("--note", default=None,
                     help="why you are running this; saved to notes.md")
     ap.add_argument("--resume", default=None, metavar="RUN_NAME")
+    ap.add_argument("--init-from", default=None, metavar="RUN_NAME",
+                    help="start a NEW run from another run's trained weights, "
+                         "with a fresh optimizer and learning rate. Unlike "
+                         "--resume this never writes into the source run.")
     ap.add_argument("--data-fraction", type=float, default=1.0,
                     help="train on this fraction of the speech clips, with "
                          "the step count held fixed")
@@ -729,6 +733,22 @@ def main():
                                      lookahead_frames=args.lookahead).to(device)
     n_params = sum(p.numel() for p in model.parameters())
 
+    # Fine-tuning. Deliberately separate from --resume, which continues a run
+    # IN PLACE and would append epochs to that run's own metrics and overwrite
+    # its checkpoints -- correct for finishing an interrupted run, destructive
+    # if what you wanted was a new experiment starting from a good model.
+    #
+    # Note that a fine-tune needs its own CONTROL to be readable. A converged
+    # run has wound its learning rate down to almost nothing, so waking it up
+    # at a fresh rate moves the model whatever else you change; runs 0033 and
+    # 0034 are the worked example of that pairing.
+    if args.init_from:
+        src = RunLog.open(args.init_from)
+        loaded, ck_name, ck_epoch = load_run_model(src, device)
+        model.load_state_dict(loaded.state_dict())
+        print(f"initialised from {src.name}, {ck_name} epoch {ck_epoch}")
+        del loaded
+
     if args.loss_scales:
         # Reports how hard each term pulls, so its weight can be chosen
         # from a measurement. With --resume it reports at that run's
@@ -756,6 +776,7 @@ def main():
         "learning_rate": args.lr, "weight_decay": WEIGHT_DECAY,
         "optimizer": OPTIMIZER, "aux_loss_weight": args.aux_weight,
         "aux_target": args.aux_target,
+        "init_from": args.init_from,
         "spectral_loss_weight": args.spec_weight,
         "mask_loss_weight": args.mask_weight,
         "spectral_compression": args.compression,

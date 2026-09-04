@@ -131,7 +131,29 @@ CLIP_SAMPLES = 48000    # 3.000 s — the frozen 268 mixtures are this length
 HOP_LENGTH = 160        # 10 ms — must divide the 1600-sample chunk evenly
 N_CLASSES = 7           # the seven noise categories on disk
 
-AUX_TARGET = "local_snr"
+AUX_TARGET = "category"
+# MEASURED AND REVERTED. "local_snr" was tried in runs 0030 and 0031, at a
+# weight loud enough to shape the shared trunk (43) and at one matched to the
+# old head's gradient pull (0.53). Neither helped the audio:
+#
+#     0030, weight 43     PESQ -1.3   STOI -1.8   SI-SNR +0.8  sigma
+#     0031, weight 0.53   PESQ +0.6   STOI -3.5   SI-SNR -2.4  sigma
+#
+# The head itself learned the task very well -- 0.074 and 0.095 mean absolute
+# error against 0.370 for the best fixed guess -- so this was not a head that
+# failed. scripts/probe_local_snr.py then explained why it could not help: a
+# 513-parameter LINEAR readout recovers speech presence to 0.124 from a FROZEN
+# run 0026 that was never taught it, against 0.352 for the same readout on an
+# untrained model of the same shape. The model had worked this out on its own,
+# unprompted, because it needs it to paint the mask. Teaching it explicitly did
+# make the representation more informative -- 0.109 as a probe against 0.074
+# trained in -- and the audio still did not move. Speech-presence knowledge is
+# therefore not what limits this model, and no weight setting could have
+# helped. The branch is closed at every weight, not just the two tried.
+#
+# The default is back to what runs 0001-0029 used. The "local_snr" path is kept
+# because it costs nothing and is the honest way to reproduce 0030 and 0031.
+#
 # What the auxiliary branch is asked to predict. This is a TRAINING AID only:
 # the branch never feeds the audio path and is deleted before deployment, so
 # it changes what the shared LSTM is pushed to represent, nothing else.
