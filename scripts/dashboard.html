@@ -184,6 +184,13 @@
     select, button { font-size: 16px; padding: 7px 10px; }
     audio { height: 36px; }
   }
+  .nav { display: flex; gap: 2px; margin-left: auto; }
+  .nav a { color: var(--dim); text-decoration: none; font-size: 12.5px;
+           padding: 5px 11px; border-radius: 7px; border: 1px solid transparent;
+           font-weight: 550; }
+  .nav a:hover { color: var(--ink); border-color: var(--line); }
+  .nav a.on { color: var(--ink); border-color: var(--accent);
+              background: var(--panel); }
 </style>
 </head>
 <body>
@@ -192,6 +199,11 @@
   <span class="muted" id="sub">loading…</span>
   <span class="live" id="live" style="display:none">live</span>
   <span class="muted" style="margin-left:auto" id="tick"></span>
+  <nav class="nav">
+    <a href="/dashboard" class="on">Runs</a>
+    <a href="/bench">Bench</a>
+    <a href="/lab">Lab</a>
+  </nav>
 </header>
 
 <div class="wrap">

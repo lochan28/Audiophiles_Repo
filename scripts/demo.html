@@ -143,6 +143,13 @@
     .specwrap canvas { height: 120px; }
     .prob { grid-template-columns: 84px 1fr 40px; font-size: 11.5px; }
   }
+  .nav { display: flex; gap: 2px; margin-left: auto; }
+  .nav a { color: var(--dim); text-decoration: none; font-size: 12.5px;
+           padding: 5px 11px; border-radius: 7px; border: 1px solid transparent;
+           font-weight: 550; }
+  .nav a:hover { color: var(--ink); border-color: var(--line); }
+  .nav a.on { color: var(--ink); border-color: var(--accent);
+              background: var(--panel); }
 </style>
 </head>
 <body>
@@ -152,6 +159,11 @@
   <span class="pill mono" id="modelPill">loading…</span>
   <span class="pill" id="devicePill"></span>
   <span class="pill" id="latencyPill"></span>
+  <nav class="nav">
+    <a href="/dashboard">Runs</a>
+    <a href="/bench" class="on">Bench</a>
+    <a href="/lab">Lab</a>
+  </nav>
 </header>
 
 <main>
