@@ -166,16 +166,22 @@ class PostFilter(nn.Module):
 def load(path, device):
     """Rebuild a saved post-filter from its own recorded configuration.
 
-    The checkpoint carries its lookahead and input choice, so a filter trained
-    with one setting cannot be silently rebuilt with another -- which is how a
-    causal model quietly becomes a non-causal one on the way to deployment.
+    EVERY shape-determining setting has to be read back, not just the ones that
+    seemed interesting when this was written. The first version read the
+    lookahead and the input choice but not the width, so loading a 96-channel
+    checkpoint silently built a 48-channel network and died on a shape
+    mismatch -- and a shape mismatch is the lucky outcome. A setting that
+    changes BEHAVIOUR rather than shape would have loaded cleanly and served
+    the wrong model. If it is a constructor argument, read it here.
     """
     ck = torch.load(path, map_location=device, weights_only=False)
     if "state_dict" not in ck:                    # a bare state_dict
         model = PostFilter().to(device)
         model.load_state_dict(ck)
         return model, {}
-    model = PostFilter(use_noisy=ck.get("use_noisy_input", USE_NOISY_INPUT),
+    model = PostFilter(channels=ck.get("channels", CHANNELS),
+                       dilations=tuple(ck.get("dilations", DILATIONS)),
+                       use_noisy=ck.get("use_noisy_input", USE_NOISY_INPUT),
                        lookahead=ck.get("lookahead", LOOKAHEAD_FRAMES)).to(device)
     model.load_state_dict(ck["state_dict"])
     return model, ck

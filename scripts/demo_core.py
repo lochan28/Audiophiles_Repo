@@ -47,17 +47,25 @@ CHECKPOINT = "auto"
 # "best" to hear what different checkpoints of the same run sound like.
 
 POSTFILTER_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                               "..", "models", "postfilter_ch48_la0_snr25.pt")
+                               "..", "models", "postfilter_ch96_la0_snr10.pt")
 # The optional SECOND STAGE. If this file is missing the bench simply does not
 # offer it, so nothing here depends on the post-filter existing.
 #
-# It is a small causal filter that predicts a residual to ADD to the mask's
+# A small strictly-causal filter that predicts a residual to ADD to the mask's
 # output -- see scripts/postfilter.py. Measured on the held-out testing split
-# with run 0026 frozen: PESQ 1.9343 -> 1.9775, STOI 0.8626 -> 0.8646, SI-SNR
-# 13.623 -> 13.966, for 0.3 ms of extra latency.
+# with run 0026 frozen:
+#
+#                     PESQ      STOI    SI-SNR    latency
+#   stage 1 alone   1.9343    0.8626    13.623    176.6 ms
+#   + ch48          1.9775    0.8646    13.966    176.7 ms
+#   + ch96          1.9826    0.8660    14.019    177.0 ms   <- served
+#
+# The narrower one is kept beside it because it is a third of the compute for
+# most of the gain, which is the trade that matters if this ever runs on the
+# Jetson rather than a 5060.
 #
 # Set to None to serve stage 1 alone, which is what every number recorded
-# before run 0034 refers to.
+# before the post-filter refers to.
 
 DB_FLOOR = -80.0
 # The quietest thing drawn on a spectrogram, in dB below that clip's loudest
@@ -157,9 +165,28 @@ def best_run_name():
 
 # --------------------------------------------------------------- loading
 
+def stage1_for_postfilter():
+    """The run the installed post-filter was TRAINED on, if there is one.
+
+    This matters more than it looks. best_run_name() ranks by peak PESQ, and
+    runs 0026, 0027 and 0028 are seed replicates within 0.01 PESQ of each
+    other, so it happily returned 0028 -- while the post-filter had learned to
+    correct 0026's particular mistakes. A second stage is fitted to ONE first
+    stage; pairing it with a different one silently serves a mismatched system
+    and every number on the page becomes a number for something we never
+    measured.
+    """
+    loaded = get_postfilter()
+    if loaded is None:
+        return None
+    name = loaded[2].get("trained_on")
+    return name if name and os.path.isdir(os.path.join(RUNS_DIR, name)) else None
+
+
 def get_model(run_name=None):
     """Load (and cache) a run's model. Returns (model, device, info)."""
-    run_name = run_name or RUN_NAME or best_run_name()
+    run_name = (run_name or RUN_NAME or stage1_for_postfilter()
+                or best_run_name())
     if run_name in _CACHE:
         return _CACHE[run_name]
 

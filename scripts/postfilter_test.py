@@ -50,7 +50,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import model_crn
 import train as T
-from postfilter import PostFilter, CHANNELS
+from postfilter import PostFilter, CHANNELS, DILATIONS
 from runlog import RunLog
 from mixing import SpeechNoiseMixtures, FrozenMixtures
 from evaluate import si_snr, safe_pesq, safe_stoi, _mean
@@ -352,6 +352,7 @@ def main():
                     "future_frames": post.lookahead,
                     "use_noisy_input": post.use_noisy,
                     "snr_low_fraction": args.snr_low_fraction,
+                    "dilations": list(DILATIONS),
                     "stage1": args.stage1,
                     "validation": b, "held_out": hb}, path)
         print(f"weights saved to models/{name}")
