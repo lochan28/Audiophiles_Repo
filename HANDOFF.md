@@ -43,21 +43,29 @@ flat U(-5,+15) dB; they are now drawn **90% from U(0,15) and 10% from
 U(-5,0)**, and the frozen evaluation sets were rebuilt to match. Read §4.0
 before comparing any two numbers in this project.
 
-Best model is **run 0026**, the first whose training and evaluation
-distributions agree. Scored on the current held-out testing set -- 125 mixtures
-never used for training and never used to choose the model:
+The system is now **two stages**: run 0026 (the CRN), frozen, followed by a
+small causal post-filter that predicts a residual to *add* to its output.
+Scored on the current held-out testing set -- 125 mixtures never used for
+training and never used to choose the model:
 
 ```
-                 raw input     our model     target     status
-PESQ               1.223         1.934        2.5       short by 0.57
-STOI               0.754         0.863        0.85      MET
-SI-SNR (dB)        6.14         13.62        15.0       short by 1.4
-latency                         177 ms       500-800    comfortably inside
+                 raw input   stage 1   two-stage    target     status
+PESQ               1.223      1.934      1.983       2.5       short by 0.52
+STOI               0.754      0.863      0.866       0.85      MET
+SI-SNR (dB)        6.14      13.62      14.02       15.0       short by 0.98
+latency                                 177.0 ms    200-250    inside
 ```
 
 **STOI now clears its target on held-out audio.** Under the project's
 acceptance rule (§3) it becomes a constraint to protect rather than a goal to
 chase. PESQ and SI-SNR are the two still short.
+
+**The two-stage system beats DeepFilterNet v0.5.6 on all three metrics at
+once**, scored on our own frozen testing set with the same code: 1.947 /
+0.8508 / 11.67 for DeepFilterNet against 1.983 / 0.8660 / 14.02 for us. Before
+the post-filter we were only level with it on PESQ. `benchmark_external.py`
+runs that comparison and guards the two things that would make it dishonest --
+a common truncation window, and a cross-correlation lag check.
 
 On the **validation split** (143 mixtures, also used for checkpoint selection,
 so optimistic) it reads PESQ 2.1024 / STOI 0.8855 / SI-SNR 13.26. Quote the
@@ -76,19 +84,34 @@ if deployment ever sees worse conditions than the test set.
 ### Latency, measured on an RTX 5060 laptop GPU
 
 ```
- 76 ms   lookahead    (16 ms unavoidable from STFT framing + 60 ms chosen)
-100 ms   chunk wait   (we process 100 ms at a time, so we wait for it to arrive)
-0.65 ms  compute
+ 76 ms    lookahead    (16 ms unavoidable from STFT framing + 60 ms chosen)
+100 ms    chunk wait   (we process 100 ms at a time, so we wait for it to arrive)
+0.92 ms   compute      (0.65 ms stage 1 + 0.27 ms post-filter)
 -------
-177 ms   end to end
+177.0 ms  end to end
 ```
 
-Inside the 500-800 ms budget the problem statement allows. It is **past**
+The post-filter is **strictly causal**, so it buys no lookahead at all: it adds
+0.3 ms to the total, all of it arithmetic. Per 3-second clip the two stages
+cost 22.39 ms and 30.26 ms respectively on the GPU.
+
+**It does not need a GPU.** Measured on one CPU core, streaming 100 ms chunks
+with state carried: **15.9 ms per chunk, 6.3x faster than real time**, using
+16% of the chunk budget. Four cores buy only 1.23x more, because the LSTM is
+sequential across frames and the tensors are too small to fill wide cores --
+so a *fast* core matters far more than *many* cores when choosing hardware.
+Per second of audio the model needs 3.75 GMAC/s, 9.3 MB of int8 weights, and
+669 MB/s of memory bandwidth just to re-read the LSTM weights every frame.
+That last figure is what rules out microcontroller-class parts.
+
+Inside the 200-250 ms budget. It is **past**
 ITU-T G.114's 150 ms comfort limit, which earlier versions of this project
 claimed; that claim no longer holds and was traded deliberately for the
 lookahead gain in §7. The GPU idles 99.4% of the time, so there is large
-headroom for a slower embedded board. Target hardware is the NVIDIA Jetson AGX
-Orin, not yet tested.
+headroom for a slower embedded board. Target hardware is a **Raspberry Pi**
+(four cores, no GPU), which has not been tested. On four x86 cores the
+two-stage system runs 8.4x faster than real time and 2.0x on one, so the
+four-core figure is the one that has to survive the port.
 
 ## 3. The acceptance rule — read before proposing any change
 
@@ -231,10 +254,27 @@ DECODER     5 layers back up 9 -> 257, fed by skip connections from the encoder
    |        ends in a sigmoid: a "keep this much" dial per band per frame
    v
 mask x noisy spectrogram, NOISY PHASE REUSED UNCHANGED, back to audio
+   |
+   v
+POST-FILTER  stage 2: strictly causal, predicts a residual to ADD
+   |         505 K parameters, no lookahead
+   v
+enhanced waveform
 ```
 
 Base model 3,018,072 parameters. The current best configuration widens it to
-**9,264,512** (LSTM 512, encoder channels ×1.5).
+**9,264,122** (LSTM 512, encoder channels ×1.5), plus **505 K** for stage 2.
+
+**Why the second stage is additive, not another mask.** A post-filter that
+applies its own mask gives `mask2 * (mask1 * noisy)` = `(mask1 * mask2) * noisy`
+— one mask on the noisy input, a re-parameterisation of stage 1, capped by the
+same ideal-mask ceiling of 3.389 that stage 1 already falls short of. Adding a
+residual does not collapse that way, which is the whole reason it can help.
+Stage 1 can only turn sound *down*; a mask cannot restore what the noise
+destroyed. Stage 2 can put energy back.
+
+Stage 1 stays **frozen** while stage 2 trains. That is deliberate: it means no
+number already measured for run 0026 can regress, which is what §3 demands.
 
 ### 5.3 Design decisions worth knowing
 
@@ -306,6 +346,9 @@ twenty minutes with no training at all.** It cheats: it uses the clean speech
 the model never sees to build the *best possible* mask, then scores it. That is
 a hard ceiling — a real model can approach it but never beat it.
 
+*Measured on the OLD flat-SNR exam. Recomputed on the current 90/10 exam the
+ceiling is **PESQ 3.389**; the conclusions below are unchanged.*
+
 ```
 condition                                    PESQ    STOI   SI-SNR
 raw noisy input                             1.189   0.745    4.46
@@ -318,8 +361,8 @@ clean magnitude + clean phase (sanity)      4.644   1.000  106.10
 Three conclusions follow directly:
 
 1. **Phase is not the constraint.** The ideal mask keeps the *same noisy phase*
-   and still reaches 3.31, well past the 2.5 target. Fixing phase alone is worth
-   +0.10. DCCRN is not indicated.
+   and still reaches 3.389 on the current exam, well past the 2.5 target.
+   Fixing phase alone is worth +0.10. DCCRN is not indicated.
 2. **The mask ceiling was correctly a dead end.** Letting a *perfect* mask boost
    above 1.0 is worth +0.08.
 3. **We were training one thing and grading another.** The model captured 73% of
@@ -335,7 +378,7 @@ STOI** — the first and still largest real effect in the project.
 
 ## 7. Every experiment, and what it showed
 
-**All 26 runs were trained on the old flat U(-5,+15) distribution except 0026.**
+**Every run before 0026 was trained on the old flat U(-5,+15) distribution.**
 The table below gives each run's score on the **current** frozen set, produced
 by `rescore_runs.py`, so every row is comparable with every other. The
 old-exam column is the run's own converged validation mean at the time, kept
@@ -388,7 +431,7 @@ Each has been tested. Re-proposing one without new evidence wastes time already
 spent.
 
 **DCCRN, complex masks, any phase-based fix.** The ideal mask keeps the same
-noisy phase and reaches PESQ 3.31, past the 2.5 target. Fixing phase alone is
+noisy phase and reaches PESQ 3.389, past the 2.5 target. Fixing phase alone is
 worth +0.10. This project's documents once claimed phase reuse was the ceiling;
 that claim is withdrawn.
 
@@ -586,16 +629,26 @@ python scripts/train.py --epochs 150 --eval-every 5 \
 python scripts/train.py --loss-scales --lstm-hidden 512 --channel-scale 1.5
 
 # score a run on held-out audio (prefers best_pesq.pt automatically)
-python scripts/evaluate.py 0016_crn_spec600_h512_data1 --split testing
+python scripts/evaluate.py 0026_crn_comp03_spec600_la6_s0 --split testing
+
+# stage 2: the post-filter. The module self-test ASSERTS causality.
+python scripts/postfilter.py
+python scripts/postfilter_test.py
+
+# compare against a published system on our own frozen set
+python scripts/benchmark_external.py --enhanced-dir <dir> --run 0026_crn_comp03_spec600_la6_s0
 
 # the ceiling, and the diagnostics - none of these need training
 python scripts/oracle_ceiling.py --split validation
 python scripts/mask_resolution.py --split validation
-python scripts/mask_diagnosis.py 0016_crn_spec600_h512_data1
-python scripts/over_suppression.py 0016_crn_spec600_h512_data1
+python scripts/mask_diagnosis.py 0026_crn_comp03_spec600_la6_s0
+python scripts/over_suppression.py 0026_crn_comp03_spec600_la6_s0
 
-# the dashboard, reachable from a phone on the same wifi
-python scripts/dashboard.py
+# ONE server, three pages, reachable from a phone on the same wifi:
+#   /dashboard  training runs, curves, comparisons, the stop switch
+#   /bench      run the model on a test clip, an upload, or the microphone
+#   /lab        build a mixture by hand: one speaker, up to four noises
+python scripts/serve.py
 ```
 
 Useful flags: `--seed` (repeat a configuration to measure run-to-run spread),
@@ -643,11 +696,19 @@ against 0.352 on an untrained model -- the representation already holds what we
 kept trying to give it. What remains is that the model HEDGES, and every
 squared-error grader that can be written is minimised by hedging.
 
-**We are level with published state of the art on this data.** DeepFilterNet
-v0.5.6 scores PESQ 1.947 on our frozen test set against our 1.944, and we beat
-it on STOI (0.8625 vs 0.8508) and SI-SNR (13.66 vs 11.67). This is the single
-most useful fact for the submission, and it reframes six runs of nulls: the
-model is not weak.
+**We are now AHEAD of published state of the art on this data.** DeepFilterNet
+v0.5.6 scores 1.947 / 0.8508 / 11.67 on our frozen test set; the two-stage
+system scores 1.983 / 0.8660 / 14.02 — ahead on all three at once. Before the
+post-filter we were level on PESQ and ahead on the other two. This is the
+single most useful fact for the submission, and it reframes six runs of nulls:
+the model is not weak.
+
+**A causal post-filter broke the plateau.** It is the first change since the
+loss fix to help the deliverable rather than a diagnostic. Run 0026 frozen, a
+505 K second stage predicting an additive residual: +0.0483 PESQ, +0.0034 STOI,
++0.343 SI-SNR on held-out audio, with validation agreeing at +5.8 / +5.3 /
++10.6 sigma. The held-out gain landing close to the validation gain is the part
+that matters — it generalises rather than being selection luck.
 
 ### What is actually left
 
@@ -664,11 +725,31 @@ model is not weak.
    small lever at the current size, and 177 ms is already over the ITU-T G.114
    150 ms figure the deck quotes. If the budget can move, this becomes a
    different problem.
-4. **Update the SIH deck.** It still carries old-exam numbers, the 150 ms
-   claim, and the disproven auxiliary-head assertion.
+4. ~~Update the SIH deck.~~ **Done.** `SIH2026_26052_ANC_Idea.pptx` now carries
+   the two-stage numbers, the corrected G.114 framing (177 ms sits inside the
+   400 ms *acceptable* range, not the 150 ms comfort limit), the DeepFilterNet
+   comparison, and four regenerated charts. Team name, team ID and theme on
+   slide 1 are still `[ FILL IN ]`.
 5. **Wire `scripts/pesq_labels.py` into `evaluate.py` and `rescore_runs.py`.**
    It scores PESQ across worker processes, 5.7x faster than serial, and is
    already on master. Small, safe, and it speeds up every future measurement.
+6. **Quantise to int8 for the embedded board.** Measured: the two-stage model
+   already runs 6.3x faster than real time on ONE CPU core, so no GPU is needed
+   to deploy. Dynamic int8 on the LSTM alone gives 1.28x; full int8 through
+   ONNX Runtime should give 3-4x and bring memory traffic under a small board's
+   bus limit. A Pi 4 or an N100 mini PC is the sensible target; a Pi Zero 2 W
+   needs the quantisation first and would have no margin.
+
+### One experiment recorded as inconclusive, not a clean negative
+
+Raising the low-SNR share of training mixtures from 10% to 25% changed nothing
+overall (+0.0425 held-out against +0.0431) and the target band got *nominally*
+worse. Two flaws in the test, both worth not repeating: early stopping used
+validation PESQ, which is 90/10 weighted and therefore biased against the
+hypothesis, so the run was cut at epoch 80 where the control ran to 135; and
+the band being targeted holds **twelve clips**, where a 0.0075 PESQ difference
+is not a measurement. Testing it properly needs a low-SNR-weighted stopping
+criterion and more evaluation clips down there.
 
 **Not on the list, deliberately:** DCCRN and phase fixes, a bigger model as the
 primary lever, mask post-processing, direct mask supervision, a finer frequency
@@ -681,7 +762,7 @@ each.
 
 On held-out audio STOI is met. PESQ sits at 1.93 against 2.5 and SI-SNR at
 13.62 against 15. Every lever that ever worked has been spent, every remaining
-one has been measured and closed, and the model is level with published work on
+one has been measured and closed, and the model is now ahead of published work on
 this data. Closing a 0.57 PESQ gap now needs something categorical -- much more
 data, a bigger model with more latency, or a revised target -- rather than
 another knob. That is a submission decision as much as a technical one, and it

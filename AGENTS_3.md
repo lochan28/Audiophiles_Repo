@@ -13,10 +13,11 @@ each decision, is in `PROJECT_CONTEXT_4.md` in this folder.
 The project folder is literally `C:\speach data\` — "speach", not
 "speech". Older notes use the wrong spelling.
 
-**Where the project is:** data preparation, the **mixing pipeline**, the
-frozen evaluation mixtures, and the **CRN model** are all done. The GPU
-works. **Training has not started** - there is no training script and
-nothing in `models/`. See `CRN_STEPS.md` for the stage-by-stage record.
+**Where the project is:** 34 training runs are done. The system is **two
+stages** - run 0026 (the CRN) frozen, plus a 505 K causal post-filter - and it
+is **ahead of DeepFilterNet v0.5.6 on all three metrics** on our own held-out
+set. STOI clears its target; PESQ and SI-SNR do not. See `HANDOFF.md` for the
+full picture and `CRN_STEPS.md` for the stage-by-stage build record.
 
 ## Layout
 
@@ -29,8 +30,10 @@ speach data/
 │   ├── noise_manifest.csv
 │   └── noise_data/noise_<split>/<category>/
 ├── scripts/          all Python scripts
-├── models/           (empty) checkpoints
-├── logs/             (empty) training run records
+├── models/           postfilter_ch48_la0_snr25.pt (stage 2 weights, tracked)
+├── runs/             one dir per training run: config, metrics, checkpoints,
+│                    samples, and a copy of its own source
+├── logs/             figures (gitignored)
 └── generated_test_mixtures/          268 frozen eval pairs
     ├── <split>/noisy/ + <split>/clean/
     └── test_mixtures_manifest.csv
@@ -84,8 +87,8 @@ not the 6 in older notes.
 `(noisy, clean, label)`. Training mixtures are generated fresh every run
 and never stored.
 
-- **SNR ~ Uniform(−5, +15) dB.** Output target is SNR > 15 dB, so this
-  forces real improvement, not polishing.
+- **SNR: 90% from U(0, +15) dB, 10% from U(−5, 0) dB.** Changed after run
+  0025; it was a flat U(−5,+15). See RULE 0 below before comparing scores.
 - **Categories sampled uniformly**, 1-in-7 each — *not* proportional to
   clip counts. This is why no class weighting is needed in the loss.
 - **Short speech is zero-padded to the 3 s window at a random offset**,
@@ -149,7 +152,7 @@ against a clean one and read the difference as an architecture result.
 
 ## Results so far -- READ THIS BEFORE SUGGESTING FIXES
 
-26 runs, detail in `PROJECT_CONTEXT_4.md` Sections 18-21.
+34 runs, detail in `PROJECT_CONTEXT_4.md` Sections 18-22.
 
 ### RULE 0: the SNR distribution changed. Check which exam a score sat.
 
@@ -206,17 +209,29 @@ none. Build models with `train.build_from_config`, never from module defaults.
 
 ### The best model, and the ceiling
 
-Run 0026 is the best model and the first trained AND scored on the current
-distribution. 9.3M parameters, lookahead 6, 176.6 ms latency, best_pesq.pt from
-epoch 110.
+The system is **two stages**: run 0026 (the CRN), frozen, plus a 505 K causal
+post-filter that adds a residual to its output. 9.3M + 128K parameters,
+lookahead 6, 177.0 ms latency, best_pesq.pt from epoch 110.
 
 ```
                         PESQ     STOI    SI-SNR
-held-out testing       1.934   0.8630    13.62
+held-out, two-stage    1.983   0.8660    14.02
+held-out, stage 1      1.934   0.8626    13.62
   noisy input          1.223   0.7535     6.14
   targets              2.5     0.85      15.0
-validation             2.1024  0.8855    13.26
+DeepFilterNet v0.5.6   1.947   0.8508    11.67
 ```
+
+**We are ahead of DeepFilterNet v0.5.6 on all three metrics at once**, scored
+on our own frozen set with our own code. Before the post-filter we were level
+on PESQ. `benchmark_external.py` handles the two things that would make that
+comparison dishonest: a common truncation window, and a cross-correlation lag
+check.
+
+The post-filter is **additive, not another mask** — `mask2 * (mask1 * noisy)`
+collapses to one mask on the noisy input and is capped by the same ideal-mask
+ceiling stage 1 already misses. Stage 1 stays frozen while it trains, so
+nothing already measured can regress.
 
 Native training bought little: run 0025, trained on the OLD distribution and
 only scored on the new one, reads 2.0981 / 0.8824 / 13.19 on validation. 0026
@@ -224,17 +239,19 @@ gains +0.004 PESQ (inside the noise), +0.0031 STOI, +0.07 SI-SNR. Nothing
 regressed so it is adopted, but almost all of the apparent improvement since
 the distribution change came from the exam, not the model.
 
-**STOI now clears its target on held-out audio.** PESQ is short by 0.58 and
-SI-SNR by 1.5.
+**STOI now clears its target on held-out audio.** PESQ is short by 0.52 and
+SI-SNR by 1.03.
 
 `scripts/oracle_ceiling.py` builds the best possible mask from the clean speech
--- no training -- and on the OLD exam reached PESQ 3.314 while keeping the noisy
-phase. It has not been recomputed on the new exam.
+-- no training -- and on the CURRENT exam reaches **PESQ 3.389** while keeping
+the noisy phase. Timing is therefore not the limit and the ceiling clears
+target. (The old-exam figure was 3.314; do not quote it.)
 
 ### Things NOT to propose, each killed by measurement
 
 **DCCRN, complex masks, any phase fix.** The ideal mask keeps the noisy phase
-and still reached 3.31, past the 2.5 target. Fixing phase alone is worth +0.10.
+and still reaches 3.389 on the current exam, past the 2.5 target. Fixing phase
+alone is worth +0.10.
 
 **Raising `MASK_MAX`.** Uncapping a PERFECT mask is worth +0.08.
 
@@ -285,12 +302,22 @@ out of the model.
 
 ### Next
 
-1. **Re-measure the noise floor** on the new exam, two more seeds of run 0026's
-   configuration. Every "is this real?" judgement currently leans on a floor
-   measured on the old mixtures, including 0026's own +0.0031 STOI.
-2. **Re-run `oracle_ceiling.py`** on the new set; the 3.314 figure is old-exam.
-3. **Then update the docs and the SIH deck**, which still carry old-exam numbers
-   and a claim about ITU-T G.114's 150 ms limit that 176.6 ms does not meet.
+1. ~~Re-measure the noise floor~~ **done** — runs 0026/0027/0028 are a
+   three-seed replicate on the current exam.
+2. ~~Re-run `oracle_ceiling.py`~~ **done** — the ceiling on the new exam is
+   **3.389** PESQ, still with the noisy phase reused. The old-exam 3.314 figure
+   is superseded.
+3. ~~Update the docs and the SIH deck~~ **done** — the deck now carries
+   two-stage numbers, the DeepFilterNet comparison, four regenerated charts,
+   and the corrected G.114 framing (177 ms is inside the 400 ms *acceptable*
+   range, not the 150 ms comfort limit). Slide 1 still needs team name, ID and
+   theme filled in by hand.
+4. **Quantise to int8.** The two-stage model already runs 6.3x faster than real
+   time on one CPU core, so deployment needs no GPU. Full int8 through ONNX
+   Runtime is the next step toward the embedded board.
+5. **Decide whether PESQ 2.5 is reachable on this data at all.** A published
+   system sits below us. This is a submission-level judgement, not a coding
+   task.
 
 An epoch is 11.3 s at 3.0M and 17.3 s at 9.3M; a 150-epoch run is about an
 hour. `EARLY_STOP_PATIENCE` is 0 on purpose.
@@ -304,7 +331,7 @@ packets arrive rather than waiting several seconds for a full clip.
 - **Chunk size: 100 ms.** Audio is processed in 100 ms chunks.
 - **Lookahead: 36 ms total** - 16 ms from the STFT framing
   (unavoidable) plus 2 frames x 10 ms from the layers.
-- **Total latency budget: 500-800 ms.** The built model uses ~136 ms.
+- **Total latency budget: 200-250 ms.** The two-stage system uses 177.0 ms.
 
 **The 2-3 chunk (200-300 ms) lookahead in older notes was wrong** and
 has been revised down. Lookahead is dead time: waiting for audio that
@@ -313,11 +340,11 @@ steeply front-loaded, arriving within a few tens of milliseconds, and
 DCCRN won its real-time category on 37 ms. Measured end to end:
 
 ```
-36 ms lookahead + 100 ms chunk wait + 0.5 ms compute = ~136 ms
+76 ms lookahead + 100 ms chunk wait + 1.3 ms compute = 177.0 ms
 ```
 
 That is inside ITU-T G.114's preferred sub-150 ms range for two-way
-conversation, which 500-800 ms would not have been.
+conversation, and it fits the 200-250 ms budget with room to spare.
 
 **Do not increase the chunk size.** The chunk-wait scales directly with
 it. Shrinking only adds margin - a 20 ms chunk would reach ~56 ms
@@ -499,6 +526,45 @@ short window. Figures go to `logs/figures/`, gitignored. Needs matplotlib.
 Installs a new noise category dropped into `new_noise_class/` as
 `<class>/train|validation|testing/`. Dry run by default. Refuses a class
 missing from any split.
+
+### `postfilter.py` / `postfilter_test.py`
+
+Stage 2. `postfilter.py` holds the network only; its self-test **asserts**
+causality rather than printing it - perturb frame 151 and the output must not
+move before frame 151 minus lookahead, because the padding arithmetic is one
+off-by-one away from leaking the future and nothing downstream would notice.
+`postfilter_test.py` trains it and holds only the training knobs. Weights live
+in `models/`, named for every knob that changes what they ARE.
+
+### `serve.py`
+
+**One server, three pages** - start this instead of `dashboard.py` and
+`demo.py`, which still run standalone:
+
+- `/dashboard` training runs, curves, comparisons, the stop switch
+- `/bench` run the model on a test clip, an upload, or the microphone
+- `/lab` build a mixture by hand: one speaker, up to four noise layers
+
+Torch is imported lazily inside the handlers, so the server starts as fast as
+the stdlib-only dashboard and only pays for the model when someone opens the
+bench or the lab.
+
+### `demo.py` / `demo_core.py` / `lab_core.py`
+
+The bench and the lab. `demo_core` loads whichever run scores best by PESQ,
+serves both stages, and rebuilds the post-filter from **its own recorded
+config** rather than module defaults - the guard against a causal model quietly
+becoming non-causal between training and deployment. Uploads and microphone
+audio are decoded and resampled to 16 kHz **in the browser**, so the server
+needs no codecs. `lab_core` mixes one speech clip with up to four noise layers,
+each at its own SNR, and reports the combined SNR (four layers at 5 dB land
+near -1 dB, because noise powers add).
+
+### `benchmark_external.py`
+
+Scores a published system on our frozen set beside ours. Guards the two things
+that would make that dishonest: a common truncation window, and a
+cross-correlation lag check.
 
 ### `rechunk_long_clips.py` / `rechunk_long_clips_no_manifest.py`
 

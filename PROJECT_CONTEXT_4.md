@@ -260,7 +260,7 @@ accumulate.
 Before finalizing its output it looks a little way into the future, since
 seeing near-future audio measurably helps quality — especially at chunk
 boundaries, where a network with no view past the edge has nothing to work
-from. The **total latency budget for the whole system is 500 to 800
+from. The **total latency budget for the whole system is 200 to 250
 milliseconds**.
 
 **REVISED: the lookahead is 36 ms, not the 200–300 ms first planned.** The
@@ -282,7 +282,7 @@ audio that has not arrived, unrecoverable by any amount of faster hardware.
 | **lookahead total** | **36 ms** |
 | chunk wait, a full chunk must arrive | 100 ms |
 | inference, measured on the RTX 5060 | 0.5 ms |
-| **end to end** | **≈136 ms** |
+| **end to end** | **177.0 ms** (was 136 ms at lookahead 2) |
 
 That leaves the 500–800 ms budget almost entirely unspent. It also lands
 inside ITU-T G.114's preferred range for two-way conversation, under 150 ms
@@ -301,7 +301,7 @@ constraint.
 The one thing that could still force a change is the model's **measured
 inference time on the real target embedded hardware**. There is now a first
 data point — 0.46 ms of compute per 100 ms of audio, 216x faster than real
-time — but on the RTX 5060, **not** the Jetson AGX Orin the problem statement
+time — but on the RTX 5060, **not** the Raspberry Pi the deployment targets
 names. Compute is nowhere near the constraint; waiting is.
 
 **This requires an architecture decision, not just a data-chunking
@@ -1072,8 +1072,9 @@ it is **not present in this project folder**.
   categories appear in all three splits (Section 7).
 - The model's inference time on the real target embedded hardware is still
   unknown. There is now a first data point on the RTX 5060 — 0.46 ms of
-  compute per 100 ms of audio, leaving end-to-end latency around 136 ms — but
-  the problem statement names a Jetson AGX Orin, which has not been tested.
+  compute per 100 ms of audio, leaving end-to-end latency at 177.0 ms — but
+  the target board is a Raspberry Pi, which has not been tested. On four x86
+  cores the two-stage system runs 8.4x faster than real time, 2.0x on one.
   Compute is far from the constraint here, so this is unlikely to force the
   chunk size or lookahead to change (Section 5).
 
@@ -1873,3 +1874,122 @@ The run records for 0032-0034 are on master like every other experiment. Note
 that `runs/*/source/` snapshots only the five core scripts, so those three runs
 cannot be reproduced from their snapshot alone -- the critic and loop code has
 to come from the branch.
+
+---
+
+## 23. The post-filter: a second stage, and the first thing since the loss fix to help
+
+Everything in Sections 19-22 was a null or a trade. This is not. Run 0026 is
+frozen and a small second stage predicts a residual to **add** to its output.
+Measured on the held-out testing split, weights chosen on validation:
+
+| | PESQ | STOI | SI-SNR |
+| --- | --- | --- | --- |
+| stage 1 alone | 1.9343 | 0.8626 | 13.623 |
+| two-stage | 1.9775 | 0.8646 | 13.966 |
+| difference | +0.0431 | +0.0019 | +0.343 |
+| target | 2.5000 | 0.8500 | 15.000 |
+
+Validation agreed at +0.0499 / +0.0030 / +0.328, which is +5.8 / +5.3 / +10.6
+sigma. **The held-out gain landing close to the validation gain is the part
+that matters** -- it generalises rather than being selection luck, which is
+what separates this from the trades in Section 22.
+
+It also puts the project **ahead of DeepFilterNet v0.5.6 on all three metrics
+at once** on our own frozen test set (1.947 / 0.8508 / 11.67). Before the
+post-filter we were level on PESQ and ahead on the other two.
+
+### Why additive and not another mask
+
+A post-filter that applies its own mask gives
+
+    mask2 * (mask1 * noisy)  =  (mask1 * mask2) * noisy
+
+which is one mask on the noisy input -- a re-parameterisation of stage 1,
+capped by the same ideal-mask ceiling of 3.389 that stage 1 already falls short
+of. Adding a residual does not collapse that way. Stage 1 can only turn sound
+*down*; where the noise was louder than the speech in a bin, that information
+is gone and no mask can bring it back. A residual can put energy back.
+
+Stage 1 stays **frozen** while stage 2 trains, which is what makes this safe
+under the acceptance rule: no number already measured for run 0026 can regress.
+
+### What it costs
+
+    stage 1 alone    26.58 ms per 3 s clip
+    two-stage        39.42 ms   (the post-filter adds 12.85 ms)
+    total latency    176.6 ms -> 177.0 ms
+
+Strictly causal, so it buys no lookahead at all and fits inside the delay the
+system already pays. 505 K parameters against stage 1's 9.26 M.
+
+Those are GPU figures. The target is a Raspberry Pi, so the CPU numbers are
+the ones that decide deployability -- measured on x86, per 3-second clip:
+
+    threads                    1        2        4
+    stage 1 alone           7.5x    18.5x    41.2x   real time
+    + 128 K post-filter     3.8x     8.2x    16.0x
+    + 505 K post-filter     2.0x     4.6x     8.4x
+
+A Pi core is several times slower than an x86 one, so the 505 K filter needs
+the four cores and int8 quantisation to have margin. The 128 K filter is kept
+beside it for exactly this reason: a third of the compute for 1.978 PESQ
+against 1.983, a trade that was irrelevant on the 5060 and decisive on a Pi.
+
+### Where it lives, and why the weights are named the way they are
+
+`scripts/postfilter.py` holds the network; `scripts/postfilter_test.py` trains
+it. The split matters: the module's self-test **asserts** causality rather than
+printing it -- perturb frame 151 and the output must not move before frame 151
+minus lookahead -- because the padding arithmetic is one off-by-one from
+leaking the future and nothing downstream would say so.
+
+Weights are tracked at `models/postfilter_ch48_la0_snr25.pt`, 530 KB. They were
+in `backups/`, which is gitignored under a policy written for 37 MB
+checkpoints, and the consequence was not hypothetical: a fixed filename let
+three runs overwrite each other, and then a name carrying only the lookahead
+let a 25% low-band run overwrite the 10% one, which had scored better. Twice is
+a pattern. **Every knob that changes what the weights ARE is now in what they
+are CALLED**, and the config travels inside the checkpoint as well.
+
+### The balanced-diet experiment, which is inconclusive rather than negative
+
+Listening said the filter helped least on quiet clips, and the numbers agreed:
++0.0249 PESQ below 0 dB against +0.0506 in the 0-5 dB band. One training
+example in ten is below 0 dB, so the obvious move was to feed it more of them.
+Raising the low-band share from 10% to 25% changed nothing overall (+0.0425
+held-out against +0.0431) and the target band got *nominally* worse.
+
+Two flaws in that test, both worth recording so nobody repeats them:
+
+- Early stopping used validation PESQ, and validation is 90/10 weighted, so
+  only about a tenth of it sits in the band the change was meant to improve.
+  The run was cut at epoch 80 where the control ran to 135 -- judged short by a
+  metric biased against its own hypothesis.
+- That band holds **twelve clips**. A 0.0075 PESQ difference across twelve
+  clips is not a measurement, and that should have been said before running
+  rather than after.
+
+So it is inconclusive, not a clean negative. Testing it properly needs a
+low-SNR-weighted stopping criterion and more evaluation clips down there, which
+is a bigger job than the idea currently deserves.
+
+### Deployment: it does not need a GPU
+
+Measured on one CPU core, streaming 100 ms chunks with state carried:
+**15.9 ms per chunk, 6.3x faster than real time**, using 16% of the chunk
+budget. Four threads buy only 1.23x more, because the LSTM is sequential across
+frames and the tensors are too small to fill wide cores -- so a *fast* core
+matters far more than *many* cores when choosing hardware.
+
+Per second of audio the two-stage model needs **3.75 GMAC/s**, **9.3 MB** of
+int8 weights, and **669 MB/s** of memory bandwidth just to re-read the LSTM
+weights every frame. Compute is decoder-dominated (204.8 M of 374.7 M MAC per
+100 ms chunk); memory is LSTM-dominated (6.69 M of 9.26 M parameters). Those
+two bottlenecks want opposite fixes.
+
+That 669 MB/s figure is what rules out microcontroller-class parts: an ESP32-S3
+is roughly 20-40x short on compute and 10-16x short on PSRAM bandwidth, which
+is a redesign rather than a port. A Raspberry Pi 4 or an Intel N100 mini PC is
+the sensible target; a Pi Zero 2 W would need full int8 quantisation first and
+would still have no margin.

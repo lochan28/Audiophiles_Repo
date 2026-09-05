@@ -14,9 +14,9 @@ just changed.
 [x] step 5   Decoder and mask               DONE
 [x] step 6   Noise classifier head, on GPU  DONE
 
-    THE MODEL IS COMPLETE.
-    Training, evaluation and the dashboard are built and running.
-    26 runs done.
+    THE MODEL IS COMPLETE, AND IT NOW HAS A SECOND STAGE.
+    Training, evaluation, the dashboard, a live bench and a
+    mixing lab are all built and running. 34 runs done.
 
     THE SNR DISTRIBUTION CHANGED after run 0025: mixtures are now
     90% U(0,15) / 10% U(-5,0) instead of a flat U(-5,+15), and the
@@ -25,8 +25,11 @@ just changed.
     old distribution carry a _snrU suffix.
 
     Best so far, on held-out audio scored against the new set:
-    run 0026 at PESQ 1.934, STOI 0.8630, SI-SNR 13.62.
+    run 0026 + a causal post-filter, at PESQ 1.983, STOI 0.8660,
+    SI-SNR 14.02. Stage 1 alone was 1.934 / 0.8626 / 13.62.
     STOI clears its 0.85 target; PESQ and SI-SNR do not.
+    This is AHEAD of DeepFilterNet v0.5.6 (1.947 / 0.8508 /
+    11.67) on all three metrics at once, on our own frozen set.
     0026 is the first run trained AND scored on the new
     distribution, and it beat 0025 by only +0.004 PESQ --
     training natively bought far less than the exam change did.
@@ -34,10 +37,14 @@ just changed.
     Settled: the objective was the ceiling, not the architecture.
     Phase, mask ceiling, LSTM resolution, mask post-processing,
     mask supervision and both compression directions are all
-    measured dead ends. Only two things ever worked -- fixing the
-    training objective, and giving the model more future context.
+    measured dead ends. Only THREE things ever worked -- fixing the
+    training objective, giving the model more future context, and
+    adding a causal second stage that ADDS a residual rather than
+    applying another mask.
 
-    Next: re-measure the noise floor on the new exam
+    Next: quantise to int8 for an embedded board (it already
+    runs 6.3x faster than real time on ONE CPU core), and decide
+    whether PESQ 2.5 is reachable on this data at all
     (two seeds), then the SIH deck.                       <-- WE ARE HERE
 ```
 
@@ -267,7 +274,7 @@ This is the same limitation as reusing the noisy timing information.
 **Later correction.** This paragraph used to end by calling that the ceiling
 DCCRN's complex-valued layers exist to lift. The effect is real, but it is not
 what caps this project's scores: an ideal mask keeping the same noisy phase
-reaches PESQ 3.31 against our 1.78. See "Results so far" below.
+reaches PESQ 3.389 against our 1.983 two-stage. See "Results so far" below.
 
 ---
 
@@ -300,13 +307,13 @@ batch of 16      1.62 GB of 8.0 GB, forward and backward
 **Compute is not the constraint.** The machine is idle 99.5% of the time.
 
 ```
-36 ms lookahead + 100 ms chunk wait + 0.5 ms compute = 136 ms
+76 ms lookahead + 100 ms chunk wait + 1.3 ms compute = 177.0 ms
 ```
 
 Against a 500–800 ms budget, and inside ITU's 150 ms comfortable-conversation
 range. The budget is dominated by *waiting*, not thinking.
 
-Two caveats: this is the 5060, **not** the Jetson AGX Orin the problem
+Two caveats: this is the 5060, **not** the Raspberry Pi the deployment targets, and
 statement names, so it is a first data point rather than the answer. And an
 untrained model runs at the same speed as a trained one — this measures the
 architecture, which is what needed knowing before committing to long runs.
@@ -333,7 +340,7 @@ model, well inside 8 GB.
 
 ## Results so far -- two things worked, everything else was a dead end
 
-26 runs. Full detail in `PROJECT_CONTEXT_4.md` Sections 18-21.
+34 runs. Full detail in `PROJECT_CONTEXT_4.md` Sections 18-23.
 
 **Check which exam a score sat before comparing it.** The SNR distribution
 changed after run 0025, from a flat U(-5,+15) to 90% U(0,15) / 10% U(-5,0), and
