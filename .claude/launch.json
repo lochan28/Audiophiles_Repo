@@ -2,15 +2,36 @@
   "version": "0.0.1",
   "configurations": [
     {
+      "name": "serve",
+      "runtimeExecutable": ".venv/Scripts/python.exe",
+      "runtimeArgs": [
+        "scripts/serve.py",
+        "--no-browser",
+        "--port",
+        "8000"
+      ],
+      "port": 8000
+    },
+    {
       "name": "dashboard",
       "runtimeExecutable": ".venv/Scripts/python.exe",
-      "runtimeArgs": ["scripts/dashboard.py", "--no-browser", "--port", "8010"],
+      "runtimeArgs": [
+        "scripts/dashboard.py",
+        "--no-browser",
+        "--port",
+        "8010"
+      ],
       "port": 8010
     },
     {
       "name": "demo",
       "runtimeExecutable": ".venv/Scripts/python.exe",
-      "runtimeArgs": ["scripts/demo.py", "--no-browser", "--port", "8020"],
+      "runtimeArgs": [
+        "scripts/demo.py",
+        "--no-browser",
+        "--port",
+        "8020"
+      ],
       "port": 8020
     }
   ]

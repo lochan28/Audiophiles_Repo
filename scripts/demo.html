@@ -472,7 +472,9 @@ function show(d) {
   // ---- players
   const order = [["noisy", "Noisy input", "what the microphone hears"],
                  ["clean", "Clean reference", "the truth, only for test clips"],
-                 ["enhanced", "Enhanced output", "what the model produced"]];
+                 ["enhanced", "Enhanced output", "stage 1 only — the mask"],
+                 ["postfiltered", "Plus the post-filter",
+                  "stage 2 adds back what the mask removed"]];
   players.innerHTML = order.filter(([k]) => d.audio[k]).map(([k, t, s]) =>
     `<div class="player"><div class="t">${t}</div><div class="d">${s}</div>
      <audio controls preload="auto" data-k="${k}" src="${d.audio[k]}"></audio></div>`
@@ -500,6 +502,10 @@ function show(d) {
         <div class="v ${b >= t ? "up" : ""}">${fmt(b, DP[k])}</div>
         <div class="s">${fmt(a, DP[k])} → target ${t}
           <b class="${g >= 0 ? "up" : "down"}">${g >= 0 ? "+" : ""}${fmt(g, DP[k])}</b></div>
+        ${d.metrics.postfiltered && d.metrics.postfiltered[k] !== null
+          ? `<div class="s">+ post-filter <b class="${
+               d.metrics.postfiltered[k] >= b ? "up" : "down"}">${fmt(
+               d.metrics.postfiltered[k], DP[k])}</b></div>` : ""}
         <div class="bar"><i style="width:${(p * 100).toFixed(1)}%;background:${
           b >= t ? "var(--good)" : "var(--accent)"}"></i></div>
       </div>`;
@@ -520,6 +526,9 @@ function show(d) {
     blocks.push(specBlock("clean", "Clean reference", "what we are aiming at"));
   blocks.push(specBlock("enhanced", "Enhanced output",
       "noisy input with the mask applied"));
+  if (d.spectrograms.postfiltered)
+    blocks.push(specBlock("postfiltered", "Plus the post-filter",
+        "stage 2 adds a correction on top"));
   blocks.push(specBlock("mask", "The mask the model predicted",
       "bright = keep this, dark = remove it"));
   specs.innerHTML = blocks.join("")
@@ -529,6 +538,8 @@ function show(d) {
   if (d.spectrograms.clean)
     drawSpec(document.getElementById("cv-clean"), d.spectrograms.clean, d.frames, d.bins, LUT_SPEC);
   drawSpec(document.getElementById("cv-enhanced"), d.spectrograms.enhanced, d.frames, d.bins, LUT_SPEC);
+  if (d.spectrograms.postfiltered)
+    drawSpec(document.getElementById("cv-postfiltered"), d.spectrograms.postfiltered, d.frames, d.bins, LUT_SPEC);
   drawSpec(document.getElementById("cv-mask"), d.mask.data, d.mask.frames, d.mask.bins, LUT_MASK);
 
   specs.querySelectorAll(".specwrap").forEach(w => {

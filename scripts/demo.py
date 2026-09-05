@@ -77,6 +77,9 @@ def analyse(noisy, clean=None, run=None, meta=None):
     from mixing import read_noise_classes
 
     enhanced, mask, logits, ms = core.enhance(noisy, run)
+    # The optional second stage. None when no post-filter is installed, in
+    # which case every block below simply omits it.
+    filtered, post_ms = core.postfilter(noisy, mask)
 
     # One shared dB reference across all three pictures. Without this, a model
     # that only turned the volume down would look like it had removed noise.
@@ -85,6 +88,8 @@ def analyse(noisy, clean=None, run=None, meta=None):
     spec = {"noisy": nb, "enhanced": eb}
     if clean is not None:
         spec["clean"], *_ = core.spectrogram(clean, ref_peak=peak)
+    if filtered is not None:
+        spec["postfiltered"], *_ = core.spectrogram(filtered, ref_peak=peak)
 
     mb, mT, mF = core.mask_picture(mask)
 
@@ -107,6 +112,10 @@ def analyse(noisy, clean=None, run=None, meta=None):
     }
     if clean is not None:
         out["audio"]["clean"] = stash_wav(core.wav_bytes(clean))
+    if filtered is not None:
+        out["audio"]["postfiltered"] = stash_wav(core.wav_bytes(filtered))
+        out["postfilter"] = dict(core.get_postfilter()[2], inference_ms=post_ms)
+        out["timing"]["postfilter_ms"] = post_ms
 
     # What the auxiliary head thinks the noise is. It is never used to clean
     # anything -- it exists to force the encoder to learn noise identity --
@@ -128,7 +137,10 @@ def analyse(noisy, clean=None, run=None, meta=None):
     if clean is not None:
         import evaluate as ev
         scores = {}
-        for label, sig in (("noisy", noisy), ("enhanced", enhanced)):
+        signals = [("noisy", noisy), ("enhanced", enhanced)]
+        if filtered is not None:
+            signals.append(("postfiltered", filtered))
+        for label, sig in signals:
             scores[label] = {
                 "si_snr": ev.si_snr(sig, clean),
                 "stoi": ev.safe_stoi(clean, sig),

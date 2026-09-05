@@ -1,43 +1,38 @@
-"""Can a second stage improve run 0026's output at all?
+"""Train the second stage: a filter that corrects run 0026's output.
 
-THIS IS AN UPPER BOUND, NOT A DEPLOYABLE THING
+The network itself lives in scripts/postfilter.py; this trains it, scores it,
+and saves it. Stage 1 is frozen throughout, so this only ever learns a
+correction on top of a fixed model.
 
-The eventual idea is a causal, streaming post-filter that cleans up what the
-mask leaves behind. This is deliberately NOT that. It is the same idea with
-every constraint removed: it sees the whole clip including the future, it has a
-receptive field of over a second, and it has no latency budget at all.
+    python scripts/postfilter_test.py --lookahead 0          the deployable one
+    python scripts/postfilter_test.py                        the upper bound
+    python scripts/postfilter_test.py --lookahead 0 --channels 96 --batch 4
 
-The logic is the one that has paid off repeatedly in this project. If a
-post-filter with unlimited future context cannot beat stage 1, then a causal
-one -- which is strictly weaker -- certainly cannot, and the week of streaming
-engineering never needs to start. An hour here decides it.
+WHY --lookahead MATTERS MOST
 
-THREE DESIGN CHOICES, EACH LOAD-BEARING
+Omitting it gives centred convolutions: 650 ms of future context, which no
+real-time system can have. That was deliberate and it was the FIRST thing run.
+The logic: if a post-filter with unlimited future cannot beat stage 1, a causal
+one is strictly weaker and the streaming work never needs to start. It came back
+positive, which turned the question into "what does causality cost".
 
-**Additive, not multiplicative.** Our output is mask1 * noisy. A post-filter
-that applies its own mask gives mask2 * (mask1 * noisy) = (mask1*mask2) * noisy,
-which is algebraically just ONE mask on the noisy input -- a re-parameterisation
-of stage 1, bounded by the same ideal-mask ceiling of 3.389 we already know we
-fall short of. Predicting a RESIDUAL TO ADD is not collapsible that way, and it
-can put back energy the mask destroyed.
+--lookahead 0 is strictly causal and is what ships. Measured on the held-out
+testing split: PESQ 1.9343 -> 1.9775, STOI 0.8626 -> 0.8646, SI-SNR 13.623 ->
+13.966, for 0.3 ms of extra latency.
 
-**It sees the noisy input as well as the enhanced output.** Masking is lossy:
-whatever stage 1 crushed toward zero is gone, so a filter looking only at the
-output is solving the same problem with strictly less information. Giving it
-both makes this a generous test, which is the point -- it makes a null result
-mean something.
+A TRAP WORTH KNOWING ABOUT
 
-**It starts as the identity.** The final convolution is zero-initialised, so at
-epoch 0 the residual is exactly zero and the two-stage output is bit-identical
-to stage 1. Any gain is therefore something the post-filter learned, not an
-accident of initialisation, and the run can only be read as "what did adding
-this buy".
+At 40 epochs the causal version kept only 45% of the non-causal gain, which read
+as the price of causality. It was not -- all the early runs were still climbing
+when they hit their epoch limit. Given 150 epochs the causal version reached
++0.0499 on validation against the non-causal run's +0.0394 at 40. Do not compare
+two of these runs unless both converged.
 
-WHAT WOULD MAKE IT WORTH CONTINUING
+WHAT WOULD MAKE A RESULT WORTH KEEPING
 
-Beating stage 1 on PESQ, STOI and SI-SNR together, by more than the noise floor
-(sd 0.0061 / 0.0004 / 0.0218). Both are measured here in the same process,
-through the same code, so the comparison has no wiggle room.
+PESQ, STOI and SI-SNR all improving, by more than the noise floor (sd 0.0061 /
+0.0004 / 0.0218). Stage 1 and the two-stage system are both measured here, in
+one process through identical code, so the comparison has no wiggle room.
 """
 
 import os
@@ -55,6 +50,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import model_crn
 import train as T
+from postfilter import PostFilter, CHANNELS
 from runlog import RunLog
 from mixing import SpeechNoiseMixtures, FrozenMixtures
 from evaluate import si_snr, safe_pesq, safe_stoi, _mean
@@ -64,36 +60,28 @@ from pesq_labels import PesqPool
 #  TUNING KNOBS -- safe to change while exploring
 # ══════════════════════════════════════════════════════════════════
 
-CHANNELS = 48
-# Width of the post-filter. WIDER can express more correction and costs memory
-# quadratically in activations, since nothing here downsamples the spectrogram.
-# At 48 with batch 8 the whole thing fits beside the frozen stage 1 on an 8 GB
-# card; raising it means lowering BATCH.
 
-DILATIONS = (1, 2, 4, 8, 16, 32)
-# Time dilation per layer. This is where the context comes from: the receptive
-# field is 1 + 2*sum(dilations) = 127 frames, or 1.27 seconds, CENTRED on the
-# frame being corrected. That is roughly 0.6 s of future -- deliberately far
-# more than any real-time system could ever have.
 
-LOOKAHEAD_FRAMES = None
-# How many frames of the FUTURE the post-filter may use in total, at 10 ms each.
-#   None  centred convolutions, which is the non-causal upper bound: 65 frames
-#         = 650 ms of future. Not deployable; it is what the first run measured.
-#   0     strictly causal. Every layer is fed entirely from the past, so the
-#         filter costs NO extra latency at all -- it can run inside the delay
-#         the system already pays.
-#   n     n frames of future, added directly to the 177 ms budget.
-#
-# The budget is handed to the EARLIEST layers first, where the dilation is
-# smallest, so what it buys is fine-grained access to the next few frames
-# rather than a coarse peek far ahead. That is the same reasoning
-# lookahead_plan uses in the encoder.
 
 BATCH = 8
 EPOCHS = 40
 LR = 3e-4
 EVAL_EVERY = 5
+
+TRAIN_SNR_LOW_FRACTION = 0.25
+# Share of TRAINING mixtures drawn from the hard -5..0 dB band. The project
+# default is 0.10, chosen to reflect expected operating conditions; 0.25 makes
+# every decibel from -5 to +15 equally represented instead.
+#
+# WHY: the first post-filter gained +0.0506 PESQ in the 0-5 dB band and only
+# +0.0249 below 0 dB, and listening agreed it helped least on the quiet clips.
+# One training example in ten was below 0 dB, so a 128k-parameter filter
+# learning a correction had almost no practice on the hardest case. How often a
+# condition OCCURS and how much practice it DESERVES are different questions.
+#
+# This changes the training diet only. Validation and testing are pre-mixed on
+# disk, so the exam does not move and results stay comparable.
+# Set to mixing.SNR_LOW_FRACTION to reproduce the first post-filter runs.
 
 PATIENCE = 6
 # Evaluations without a new best validation PESQ before stopping. At
@@ -101,17 +89,7 @@ PATIENCE = 6
 # first three runs were all still climbing when they hit their epoch limit, so
 # stopping too eagerly is the more likely mistake here.
 
-RESIDUAL_COMPRESSION = 0.3
-# The residual is predicted in a compressed complex domain, the same power the
-# spectral grader uses. Raw complex values span orders of magnitude and are
-# dominated by loud vowels, so a residual predicted on them would only ever
-# learn to adjust the loudest parts.
 
-USE_NOISY_INPUT = True
-# Whether the post-filter also sees the original noisy audio. False makes it a
-# strict post-filter that only sees stage 1's output, which is the weaker and
-# more honest version of the question. True is the generous version and is the
-# default because a null result then rules out both.
 
 # ══════════════════════════════════════════════════════════════════
 #  FIXED
@@ -119,94 +97,6 @@ USE_NOISY_INPUT = True
 
 STAGE1 = "0026_crn_comp03_spec600_la6_s0"
 EPS = 1e-8
-
-
-def compress(spec, p=RESIDUAL_COMPRESSION):
-    """Complex spectrum -> same phase, magnitude raised to p."""
-    mag = spec.abs()
-    return ((mag + EPS) ** p) * (spec / (mag + EPS))
-
-
-def decompress(z, p=RESIDUAL_COMPRESSION):
-    mag = z.abs()
-    return ((mag + EPS) ** (1.0 / p)) * (z / (mag + EPS))
-
-
-class TimeConv(nn.Module):
-    """A 3x3 convolution whose past and future reach are set explicitly.
-
-    A dilated 3-wide kernel spans offsets -d, 0, +d, so it needs 2d frames of
-    padding to keep the length. WHERE that padding goes is the whole question:
-    all of it on the left and the kernel is fed entirely from the past; split
-    evenly and it reads the future. `right` is how many of those frames the
-    layer is allowed to take from ahead.
-    """
-
-    def __init__(self, in_ch, out_ch, dilation, right):
-        super().__init__()
-        self.right = right
-        # ZeroPad2d takes (freq_left, freq_right, time_left, time_right).
-        self.pad = nn.ZeroPad2d((1, 1, 2 * dilation - right, right))
-        self.conv = nn.Conv2d(in_ch, out_ch, 3, padding=0,
-                              dilation=(dilation, 1))
-
-    def forward(self, x):
-        return self.conv(self.pad(x))
-
-
-def allocate_lookahead(dilations, budget):
-    """Hand a total future-frame budget to the earliest layers first."""
-    rights = []
-    for d in dilations:
-        take = d if budget is None else min(d, budget)
-        rights.append(take)
-        if budget is not None:
-            budget -= take
-    return rights
-
-
-class PostFilter(nn.Module):
-    """Predicts a residual to ADD to stage 1's spectrum.
-
-    How far into the future it may look is set by `lookahead`: None gives
-    centred convolutions -- the non-causal upper bound -- and an integer caps
-    the total future reach at that many frames. 0 is strictly causal.
-    """
-
-    def __init__(self, channels=CHANNELS, dilations=DILATIONS,
-                 use_noisy=USE_NOISY_INPUT, lookahead=LOOKAHEAD_FRAMES):
-        super().__init__()
-        self.use_noisy = use_noisy
-        in_ch = 4 if use_noisy else 2
-        # The input and output convolutions are dilation 1 but still read a
-        # frame either side, so they are counted in the budget like any other.
-        plan = (1,) + tuple(dilations) + (1,)
-        rights = allocate_lookahead(plan, lookahead)
-        self.lookahead = sum(rights)
-        self.past = sum(2 * d - r for d, r in zip(plan, rights))
-
-        layers = [TimeConv(in_ch, channels, 1, rights[0]), nn.ELU()]
-        for d, r in zip(dilations, rights[1:-1]):
-            layers += [TimeConv(channels, channels, d, r),
-                       nn.BatchNorm2d(channels), nn.ELU()]
-        self.body = nn.Sequential(*layers)
-        self.out = TimeConv(channels, 2, 1, rights[-1])
-        # Zero-initialised so the post-filter starts as the identity and the
-        # experiment reads as "what did adding this buy", not "what did
-        # replacing stage 1 with a random correction do".
-        nn.init.zeros_(self.out.conv.weight)
-        nn.init.zeros_(self.out.conv.bias)
-
-    def forward(self, enhanced_spec, noisy_spec):
-        e = compress(enhanced_spec)
-        chans = [e.real, e.imag]
-        if self.use_noisy:
-            n = compress(noisy_spec)
-            chans += [n.real, n.imag]
-        x = torch.stack(chans, dim=1)                    # (B, C, T, F)
-        r = self.out(self.body(x))                       # (B, 2, T, F)
-        corrected = e + torch.complex(r[:, 0], r[:, 1])
-        return decompress(corrected)
 
 
 def two_stage(stage1, post, noisy):
@@ -218,6 +108,33 @@ def two_stage(stage1, post, noisy):
     out_spec = post(enh_spec, noisy_spec)
     return (model_crn.to_waveform(out_spec, noisy.shape[-1]),
             model_crn.to_waveform(enh_spec, noisy.shape[-1]))
+
+
+@torch.no_grad()
+def score_by_band(stage1, post, split, device,
+                  bands=((-5, 0), (0, 5), (5, 10), (10, 15))):
+    """PESQ change per input-SNR band, which is where the trade shows up.
+
+    An overall mean can hide a filter that got better at quiet clips by getting
+    worse at loud ones, and that trade is the whole risk of rebalancing the
+    training diet. It is only visible split by band.
+    """
+    ds = FrozenMixtures(split)
+    out = {b: [] for b in bands}
+    for i in range(len(ds)):
+        d = ds.describe(i)
+        noisy = torch.from_numpy(np.ascontiguousarray(d["noisy"]))
+        noisy = noisy.unsqueeze(0).to(device)
+        two, enh = two_stage(stage1, post, noisy)
+        a = safe_pesq(d["clean"], enh[0].cpu().numpy())
+        b = safe_pesq(d["clean"], two[0].cpu().numpy())
+        if a is None or b is None:
+            continue
+        for lo, hi in bands:
+            if lo <= d["snr_db"] < hi:
+                out[(lo, hi)].append(b - a)
+                break
+    return out
 
 
 @torch.no_grad()
@@ -249,6 +166,12 @@ def main():
     ap.add_argument("--epochs", type=int, default=EPOCHS)
     ap.add_argument("--no-noisy-input", action="store_true",
                     help="strict post-filter: only sees stage 1's output")
+    ap.add_argument("--channels", type=int, default=CHANNELS,
+                    help="width of the post-filter")
+    ap.add_argument("--batch", type=int, default=BATCH)
+    ap.add_argument("--snr-low-fraction", type=float,
+                    default=TRAIN_SNR_LOW_FRACTION,
+                    help="share of TRAINING mixtures from -5..0 dB")
     ap.add_argument("--lookahead", type=int, default=None,
                     help="total future frames allowed, 10 ms each. 0 is "
                          "strictly causal. Omit for the non-causal upper bound")
@@ -262,7 +185,8 @@ def main():
     for p in stage1.parameters():
         p.requires_grad_(False)
 
-    post = PostFilter(use_noisy=not args.no_noisy_input,
+    post = PostFilter(channels=args.channels,
+                      use_noisy=not args.no_noisy_input,
                       lookahead=args.lookahead).to(device)
     n_post = sum(p.numel() for p in post.parameters())
     print(f"stage 1       {args.stage1}, {ck} epoch {ep}, frozen")
@@ -276,9 +200,18 @@ def main():
         print(f"              adds {post.lookahead * 10} ms to the 177 ms "
               f"budget, giving {177 + post.lookahead * 10} ms\n")
 
-    train_loader = DataLoader(SpeechNoiseMixtures("train"), batch_size=BATCH,
+    # draw_snr reads this at call time, and only the TRAINING mixtures are made
+    # on the fly -- the frozen sets are already wavs on disk -- so this changes
+    # what the filter practises on and nothing about what it is marked against.
+    import mixing
+    was = mixing.SNR_LOW_FRACTION
+    mixing.SNR_LOW_FRACTION = args.snr_low_fraction
+    print(f"training SNR diet: {was:.0%} -> "
+          f"{args.snr_low_fraction:.0%} drawn from -5..0 dB\n")
+
+    train_loader = DataLoader(SpeechNoiseMixtures("train"), batch_size=args.batch,
                               shuffle=True, num_workers=0)
-    val_loader = DataLoader(FrozenMixtures("validation"), batch_size=BATCH,
+    val_loader = DataLoader(FrozenMixtures("validation"), batch_size=args.batch,
                             shuffle=False, num_workers=0)
     opt = torch.optim.Adam(post.parameters(), lr=LR)
 
@@ -345,7 +278,7 @@ def main():
         # anything, which is the only reason a number from it means something.
         post.load_state_dict(best_state)
         post.eval()
-        test_loader = DataLoader(FrozenMixtures("testing"), batch_size=BATCH,
+        test_loader = DataLoader(FrozenMixtures("testing"), batch_size=args.batch,
                                  shuffle=False, num_workers=0)
         print(f"\nheld-out testing split, using the epoch {best_epoch} weights")
         held = score(stage1, post, test_loader, device, pool)
@@ -378,6 +311,20 @@ def main():
     print(f"{'target':<24}{2.5:>10.4f}{0.85:>10.4f}{15.0:>10.3f}")
     print("-" * 54)
 
+    bands = score_by_band(stage1, post, "testing", device)
+    print(f"\n{'held-out by input SNR':<22}{'clips':>7}{'mean dPESQ':>13}"
+          f"{'worse':>8}")
+    for (lo, hi), v in bands.items():
+        if v:
+            print(f"{f'{lo:>3} to {hi:>3} dB':<22}{len(v):>7}"
+                  f"{sum(v) / len(v):>+13.4f}"
+                  f"{100 * sum(1 for x in v if x < 0) / len(v):>7.0f}%")
+    print("\nthe first post-filter, 10% low-SNR diet, scored:")
+    print("   -5 to   0 dB      12      +0.0249     17%")
+    print("    0 to   5 dB      42      +0.0506      5%")
+    print("    5 to  10 dB      31      +0.0361     10%")
+    print("   10 to  15 dB      40      +0.0484     15%")
+
     won = all(x > 0 for x in sig)
     print(f"\n{'WORTH CONTINUING' if won else 'NOT WORTH CONTINUING'}")
     if not won:
@@ -385,22 +332,29 @@ def main():
         print("noisy input as well, cannot improve all three metrics. A causal")
         print("one is strictly weaker, so the streaming version is closed too.")
     else:
-        # Named by configuration. A single fixed filename meant three runs in
-        # a row all wrote to "postfilter_noncausal.pt", so the file ended up
-        # holding the 40 ms causal weights under a name that said otherwise --
-        # which is how a wrong conclusion gets drawn six weeks later.
-        tag = ("noncausal" if args.lookahead is None
-               else f"causal_la{args.lookahead}")
+        # EVERY knob that changes the model goes in the filename. This bit has
+        # bitten twice. First a single fixed name meant three runs all wrote to
+        # "postfilter_noncausal.pt", leaving the 40 ms causal weights under a
+        # name that said otherwise. Then a name carrying only the lookahead let
+        # the 25% diet run overwrite the 10% one, which scored better. Twice is
+        # the pattern, not the instance: if a knob changes what the weights ARE,
+        # it belongs in what they are CALLED.
+        la = "noncausal" if args.lookahead is None else f"la{args.lookahead}"
+        name = (f"postfilter_ch{args.channels}_{la}"
+                f"_snr{round(args.snr_low_fraction * 100)}.pt")
         path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                            "..", "backups", f"postfilter_{tag}.pt")
+                            "..", "models", name)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
         torch.save({"state_dict": post.state_dict(),
+                    "channels": args.channels,
                     "lookahead": args.lookahead,
                     "past_frames": post.past,
                     "future_frames": post.lookahead,
                     "use_noisy_input": post.use_noisy,
+                    "snr_low_fraction": args.snr_low_fraction,
                     "stage1": args.stage1,
-                    "validation": b}, path)
-        print(f"weights saved to backups/{os.path.basename(path)}")
+                    "validation": b, "held_out": hb}, path)
+        print(f"weights saved to models/{name}")
 
 
 if __name__ == "__main__":

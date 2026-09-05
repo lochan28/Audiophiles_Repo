@@ -46,6 +46,19 @@ CHECKPOINT = "auto"
 # loss and PESQ diverge by over 0.1 PESQ. Override with "best_pesq" / "last" /
 # "best" to hear what different checkpoints of the same run sound like.
 
+POSTFILTER_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               "..", "models", "postfilter_ch48_la0_snr25.pt")
+# The optional SECOND STAGE. If this file is missing the bench simply does not
+# offer it, so nothing here depends on the post-filter existing.
+#
+# It is a small causal filter that predicts a residual to ADD to the mask's
+# output -- see scripts/postfilter.py. Measured on the held-out testing split
+# with run 0026 frozen: PESQ 1.9343 -> 1.9775, STOI 0.8626 -> 0.8646, SI-SNR
+# 13.623 -> 13.966, for 0.3 ms of extra latency.
+#
+# Set to None to serve stage 1 alone, which is what every number recorded
+# before run 0034 refers to.
+
 DB_FLOOR = -80.0
 # The quietest thing drawn on a spectrogram, in dB below that clip's loudest
 # point. LOWER (-100) reveals faint noise floors and reverb tails but makes the
@@ -176,7 +189,54 @@ def get_model(run_name=None):
     return _CACHE[run_name]
 
 
+def get_postfilter():
+    """Load (and cache) the second stage, or None if none is installed."""
+    if "__post__" in _CACHE:
+        return _CACHE["__post__"]
+    loaded = None
+    if POSTFILTER_PATH and os.path.exists(POSTFILTER_PATH):
+        import postfilter as pf
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        model, meta = pf.load(POSTFILTER_PATH, device)
+        model.eval()
+        loaded = (model, device, {
+            "parameters": sum(p.numel() for p in model.parameters()),
+            "lookahead_frames": model.lookahead,
+            "past_frames": model.past,
+            "added_latency_ms": model.lookahead * 10,
+            "trained_on": meta.get("stage1"),
+        })
+    _CACHE["__post__"] = loaded
+    return loaded
+
+
 # ---------------------------------------------------------------- audio
+
+def postfilter(wav, mask):
+    """Stage 1's mask and the original noisy audio -> corrected waveform.
+
+    Takes the MASK rather than the enhanced waveform so stage 1 does not have
+    to run twice; the caller already has it from enhance().
+    Returns (waveform, milliseconds), or (None, None) when no filter exists.
+    """
+    loaded = get_postfilter()
+    if loaded is None:
+        return None, None
+    import postfilter as pf
+    model, device, _ = loaded
+    x = torch.from_numpy(np.ascontiguousarray(wav, dtype=np.float32))
+    x = x.unsqueeze(0).to(device)
+    m = torch.from_numpy(np.ascontiguousarray(mask, dtype=np.float32))
+    m = m.unsqueeze(0).to(device)
+    if device.type == "cuda":
+        torch.cuda.synchronize()
+    t0 = time.perf_counter()
+    with torch.no_grad():
+        out = pf.apply(model, x, m)
+    if device.type == "cuda":
+        torch.cuda.synchronize()
+    return out[0].cpu().numpy(), (time.perf_counter() - t0) * 1000.0
+
 
 def enhance(wav, run_name=None):
     """Noisy float32 mono at 16 kHz -> (enhanced, mask, logits, ms taken)."""
