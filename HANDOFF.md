@@ -751,6 +751,48 @@ the band being targeted holds **twelve clips**, where a 0.0075 PESQ difference
 is not a measurement. Testing it properly needs a low-SNR-weighted stopping
 criterion and more evaluation clips down there.
 
+### Planned: multiple noises per mixture
+
+Every mixture so far contains exactly ONE noise clip. A real battlefield has
+rotor noise *and* gunfire at once, so this is the least realistic simplification
+left. Training mixtures would be built dynamically as now; validation and
+testing would be frozen on disk as now.
+
+Three decisions come before any code:
+
+- **SNR definition.** The COMBINED noise should hit the target SNR, with the
+  power budget split among the clips. Giving each its own SNR makes the total
+  louder than any of them and the difficulty drifts.
+- **The category label.** The aux head is a 7-way softmax; "the category" is
+  undefined with three noises playing. Runs 0008, 0030 and 0031 all showed the
+  head contributes nothing, so DELETE it rather than redesign it. It also
+  breaks per-category reporting in evaluate.py, the dashboard and the bench.
+- **Simultaneous or staggered.** All k spanning the clip is the simple version.
+  Continuous noise throughout with impulsive events at random offsets is more
+  realistic and a bigger build; do the simple one first.
+
+Steps: `mix_at_snr` becomes `mix_many` (draw k=1..3 from distinct categories,
+split the power budget, sum, clip-guard once at the end) -> metadata carries a
+LIST of categories and weights -> regenerate the frozen sets, archiving the old
+ones the way `generated_test_mixtures_snr_uniform/` preserves the pre-90/10 set
+-> update the consumers -> re-measure the noisy baseline and the ideal-mask
+ceiling -> retrain stage 1, then the post-filter -> re-measure the noise floor
+with three seeds.
+
+**This invalidates every number in the project, not the code.** PESQ 1.983, the
+3.389 ceiling, the 0.0061 noise floor and the DeepFilterNet comparison were all
+measured on single-noise mixtures and none of them transfer. The SNR
+distribution change was worth +0.19 PESQ on its own with the model untouched;
+expect the same kind of shift here, in the other direction, because overlapping
+noises are harder to separate. **A fall from 1.983 is the exam getting harder,
+not the model getting worse** -- but that only holds if it is said before the
+run, not after.
+
+Cost: about a day to build and regenerate, then three retrains plus three
+noise-floor seeds, so 12-15 GPU hours before there is a trustworthy number. Do
+not start it mid-submission: it leaves the old numbers invalid and the new ones
+not yet earned.
+
 **Not on the list, deliberately:** DCCRN and phase fixes, a bigger model as the
 primary lever, mask post-processing, direct mask supervision, a finer frequency
 view for the LSTM, more compression in either direction, deep filtering,
