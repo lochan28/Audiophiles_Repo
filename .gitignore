@@ -44,3 +44,9 @@ backups/
 
 # Generated demo audio -- rebuilt by scripts/make_demo_clips.py
 generated_demo_clips/
+
+# Pi deployment staging -- copies of tracked files and downloaded wheels.
+# Both are rebuilt by the steps in deploy/RUNSHEET.md; committing 359 MB of
+# duplicates would bloat the history permanently.
+deploy/bundle/
+deploy/wheels/
