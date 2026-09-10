@@ -63,7 +63,25 @@ pip install pesq pystoi
 ```
 Budget a few minutes for the build. Skip this on a tight day.
 
-## 5. If it misses the deadline
+## 5. Live from the microphone
+Plug in the USB headset, then:
+```bash
+python3 live_mic.py --list          # find the device numbers
+python3 live_mic.py --in 2 --out 3  # use them
+```
+- **Use headphones.** On speakers the cleaned output feeds back into the
+  microphone and the model ends up fighting its own echo.
+- `--bypass` passes the microphone through untouched, which is the honest
+  A/B: verified bit-perfect, correlation 1.000000 against the raw input.
+- Added delay is about 190 ms (100 ms to fill a chunk, 88 ms the model holds
+  back), plus whatever the USB stack adds -- expect roughly a third of a
+  second end to end.
+- It prints a latency line every two seconds. Watch `underruns`: zero is
+  what you want, and anything else means the board is not keeping up.
+- No sound card handy? `--file in.wav out.wav` runs the identical path on a
+  WAV, which is how this was verified before the board existed.
+
+## 6. If it misses the deadline
 Work down this list, stopping as soon as `selfcheck.py` reports `ok` on a
 thread count you can live with:
 
@@ -81,7 +99,7 @@ thread count you can live with:
    which pushes the end-to-end figure to the top of the 200-250 ms budget.
    Last resort.
 
-## 6. Record what you measured
+## 7. Record what you measured
 Copy the whole `selfcheck.py` output into a file and keep it. Every Pi
 number in the project documents is currently an x86 measurement scaled by a
 rule of thumb; this run is the first real one, and it replaces them.

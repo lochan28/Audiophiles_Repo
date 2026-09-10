@@ -114,3 +114,49 @@ still make real time on four.
 **Not done:** `deploy/wheels` still lacks pesq/pystoi, because no aarch64
 wheel exists. RUNSHEET.md now says so and gives the source-build commands
 for anyone who wants them.
+
+---
+
+## Step 6 — Audio I/O, and the whole kit checked in isolation (Claude)
+
+**Created:** `deploy/live_mic.py`
+
+Microphone in, model, headphones out. A worker thread does the inference
+while the sound-card callback only moves memory, because the callback runs
+on a real-time thread that must return before the next buffer arrives, and
+17-77 ms of inference inside it is not a margin worth gambling a live demo
+on. `--file in.wav out.wav` drives the identical path with a WAV standing in
+for the sound card, which is how all of this was verified with no board.
+
+**One real defect this found.** The first version wrote silence whenever the
+worker had nothing ready. That is correct for the first two chunks -- the
+model holds 88 ms back, so there genuinely is nothing yet -- but every later
+shortfall inserts silence into the MIDDLE of the stream and shifts
+everything after it permanently. Two such gaps split the output into three
+differently-shifted segments, and the result scored SI-SNR -26.7 dB while
+having the right loudness, so it looked like working audio. Fixed with a
+pre-roll: output is withheld until the first full chunk exists, after which
+a shortfall is a counted dropout rather than a silent desync.
+
+**Verification** — every number below is from a copy of `deploy/` placed
+outside the repository, with the repo unreachable:
+
+    module origins                    7/7 resolved inside the bundle, 0 leaks
+    selfcheck.py                      GO
+      streaming vs whole-clip         1.3e-07
+      SI-SNR 14.741 vs reference      drift -0.000 dB
+      1 / 2 / 4 threads   54.4 / 27.3 / 17.5 ms median, deadline 100 ms
+    live_mic.py --file                21.2 ms median, 24.8 worst
+                                      0 dropped, 0 underruns
+    enhancement, testing_000          SI-SNR -1.98 -> +6.69 dB
+                                      PESQ    1.109 -> 1.377
+                                      STOI    0.644 -> 0.741
+    --bypass fidelity                 correlation 1.000000 (bit-perfect A/B)
+    --list without sounddevice        prints install instructions, not a
+                                      traceback
+
+**Result:** PASS. Note the one-thread figure: 54.4 ms median but 90.9 ms
+worst against a 100 ms deadline. It passes, but with almost nothing spare,
+so a single core is not a plan -- four is.
+
+**Not done:** nothing here has run on ARM. Every figure is x86.
