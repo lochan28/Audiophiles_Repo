@@ -60,3 +60,57 @@ GO
 **What it does:** Documents the commands to copy the bundle, install the offline wheels via pip, and execute the self-check script to verify success.
 **Verification:** Manual verification of the written contents.
 **Result:** PASS.
+
+---
+
+## Step 5 — Review fixes (Claude)
+
+Four defects found reviewing steps 1-4. All four are fixed; the originals are
+described above and left in place, because what was wrong is worth keeping.
+
+**1. `selfcheck.py` refused GO without pesq/pystoi.**
+Verified that `pesq` has no aarch64 wheel at all (`pip download` returns
+"No matching distribution found") — it is a C extension needing a source
+build. A working Pi would therefore have reported NO-GO because a scoring
+library would not install, which is worse than not checking. GO is now
+gated on SI-SNR, which is a dozen lines of numpy and runs anywhere. PESQ
+and STOI are still printed and compared when present, but never decide.
+
+**2. It benchmarked the wrong path.** It timed whole 3-second clips, which
+says nothing about whether a live system keeps up. It now drives
+`stream.py` chunk by chunk against the 100 ms deadline and reports the
+worst chunk, not just the median.
+
+**3. The reference metrics were the wrong baseline.** REF_* held the
+125-clip ch96 figures while the bundle scores 20 clips with ch48. Step 3
+responded by deleting the threshold, so GO verified nothing. Correct
+references for this exact bundle were measured on x86 and baked in
+(SI-SNR 14.741, PESQ 2.0799, STOI 0.8614) with a 0.05 dB tolerance —
+about twice the project's 0.0218 dB noise floor.
+
+**4. The bundle was 248 MB of mostly waste.** It carried all three
+checkpoints (177 MB) and 66 MB of audio samples that nothing on the Pi
+reads. Trimmed to `best_pesq.pt` only: **248 MB -> 41 MB**.
+
+Also added: `stream.py` to the bundle, and a streaming-vs-whole-clip
+exactness check that runs against the bundle's own model rather than
+calling `stream.self_test()`, which reaches for repo modules that are
+deliberately not shipped.
+
+**Verification** — `python deploy/selfcheck.py` on x86:
+
+    model_crn / postfilter self-tests   passed
+    streaming                           passed (1.3e-07 vs whole-clip)
+    SI-SNR 14.741 vs reference 14.741   drift -0.000 dB
+    1 thread   52.6 ms median, 76.2 worst   1.9x headroom   ok
+    2 threads  28.6 ms median, 32.4 worst   3.5x headroom   ok
+    4 threads  17.1 ms median, 21.7 worst   5.8x headroom   ok
+    GO
+
+**Result:** PASS. Note that it clears the deadline even on ONE thread with
+1.9x headroom, so a Pi core roughly a third the speed of an x86 one should
+still make real time on four.
+
+**Not done:** `deploy/wheels` still lacks pesq/pystoi, because no aarch64
+wheel exists. RUNSHEET.md now says so and gives the source-build commands
+for anyone who wants them.
