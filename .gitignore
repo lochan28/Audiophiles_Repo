@@ -41,3 +41,6 @@ runs/*/metrics.csv
 # byte-identical to a file already on disk, so committing them would double the
 # storage without adding a second point of failure.
 backups/
+
+# Generated demo audio -- rebuilt by scripts/make_demo_clips.py
+generated_demo_clips/

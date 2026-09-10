@@ -53,9 +53,27 @@ _AUDIO_LIMIT = 64
 _LOCK = threading.Lock()
 
 
+_AUDIO_SEQ = 0
+
+
 def stash_wav(data):
-    token = f"{int(time.time() * 1000):x}{len(_AUDIO_ORDER):03x}"
+    """Hold one generated WAV and return the URL that serves it.
+
+    The counter is what makes the token unique, and it has to be. An earlier
+    version used len(_AUDIO_ORDER) as the suffix, which stops changing the
+    moment the cache reaches its limit -- from then on every stash within the
+    same millisecond produced the SAME token, so all four or five clips of one
+    analysis collapsed onto one entry and every player on the page returned
+    whichever had been stored last. The symptom was that pressing play on the
+    mixture played the enhanced audio.
+
+    Generated inside the lock too, so two concurrent requests cannot read the
+    same counter value before either increments it.
+    """
+    global _AUDIO_SEQ
     with _LOCK:
+        _AUDIO_SEQ += 1
+        token = f"{int(time.time() * 1000):x}{_AUDIO_SEQ:06x}"
         _AUDIO[token] = data
         _AUDIO_ORDER.append(token)
         while len(_AUDIO_ORDER) > _AUDIO_LIMIT:
@@ -110,6 +128,16 @@ def analyse(noisy, clean=None, run=None, meta=None):
         },
         "model": core.get_model(run)[2],
     }
+
+    # The latency evidence: run the model the way a live system would, one
+    # 100 ms chunk at a time, and time every chunk against its deadline. A
+    # single average hides the only question that matters for real time --
+    # did EVERY chunk make it? -- so the page gets all of them.
+    try:
+        chunks, summary = core.stream_timing(noisy, run)
+        out["stream"] = {"chunks": chunks, "summary": summary}
+    except Exception as e:                       # never break the page for it
+        out["stream"] = {"error": f"{type(e).__name__}: {e}"}
     if clean is not None:
         out["audio"]["clean"] = stash_wav(core.wav_bytes(clean))
     if filtered is not None:
@@ -203,7 +231,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({
                 "model": core.get_model()[2],
                 "runs": core.available_runs(),
-                "splits": ["testing", "validation"],
+                "splits": list(SPLITS),
             })
 
         if route == "/api/testset":
@@ -213,19 +241,28 @@ class Handler(BaseHTTPRequestHandler):
         if route == "/api/analyze/test":
             from mixing import FrozenMixtures
             split = q.get("split", ["testing"])[0]
-            if split not in ("testing", "validation"):
+            if split not in SPLITS:
                 return self.send_json({"error": "bad split"}, 400)
             idx = int(q.get("index", ["0"])[0])
             run = q.get("run", [None])[0]
             if run is not None and not SAFE.match(run):
                 return self.send_json({"error": "bad run"}, 400)
-            ds = FrozenMixtures(split)
-            if not 0 <= idx < len(ds):
-                return self.send_json({"error": "index out of range"}, 404)
-            m = ds.describe(idx)
+            if split == "demo":
+                rows = demo_rows()
+                if not 0 <= idx < len(rows):
+                    return self.send_json({"error": "index out of range"}, 404)
+                m = demo_describe(idx)
+            else:
+                ds = FrozenMixtures(split)
+                if not 0 <= idx < len(ds):
+                    return self.send_json({"error": "index out of range"}, 404)
+                m = ds.describe(idx)
             meta = {"source": "testset", "split": split, "index": idx,
                     "category": m["category"], "snr_db": m["snr_db"],
                     "language": m["language"]}
+            if split == "demo":
+                meta.update(boundaries_s=m["boundaries_s"],
+                            segments=m["segments"])
             return self.send_json(
                 analyse(m["noisy"], m["clean"], run, meta))
 
@@ -268,15 +305,79 @@ class Handler(BaseHTTPRequestHandler):
                         "name": q.get("name", [""])[0][:120],
                         "truncated": truncated}
                 return self.send_json(analyse(wav, None, run, meta))
+
+            # Live microphone. Raw float32 in, raw float32 out -- no JSON and
+            # no base64 around the audio, because this runs every 100 ms and
+            # encoding overhead would eat the deadline. The reply may be
+            # shorter than the request (or empty) while the stream fills its
+            # hold-back window; the page appends whatever it gets.
+            if route == "/api/stream":
+                import demo_core as core
+                token = q.get("token", [""])[0]
+                if not token or not SAFE.match(token):
+                    return self.send_json({"error": "bad token"}, 400)
+                run = q.get("run", [None])[0]
+                if run is not None and not SAFE.match(run):
+                    return self.send_json({"error": "bad run"}, 400)
+                if q.get("close", [""])[0] == "1":
+                    core.stream_close(token)
+                    return self.send_json({"ok": True})
+                chunk = np.frombuffer(raw, dtype="<f4").astype(np.float32)
+                out = core.stream_session(token, run).push(chunk)
+                return self.send_bytes(
+                    np.ascontiguousarray(out, dtype="<f4").tobytes(),
+                    "application/octet-stream")
         except Exception as e:
             return self.send_json({"error": f"{type(e).__name__}: {e}"}, 500)
 
         return self.send_json({"error": f"no route {route}"}, 404)
 
 
+DEMO_DIR = os.path.join(PROJECT_ROOT, "generated_demo_clips")
+SPLITS = ("testing", "validation", "demo")
+
+
+def demo_rows():
+    """The long presentation clips, if make_demo_clips.py has been run."""
+    import csv
+    path = os.path.join(DEMO_DIR, "demo_clips_manifest.csv")
+    if not os.path.exists(path):
+        return []
+    with open(path, newline="", encoding="utf-8-sig") as f:
+        return list(csv.DictReader(f))
+
+
+def demo_describe(idx):
+    """Same shape FrozenMixtures.describe returns, for a demo clip.
+
+    A demo clip is three held-out testing mixtures joined end to end, so it
+    still has a true clean reference and can be scored with the same code.
+    """
+    import soundfile as sf
+    rows = demo_rows()
+    r = rows[idx]
+    def rd(rel):
+        w, _ = sf.read(os.path.join(DEMO_DIR, rel.replace("/", os.sep)),
+                       dtype="float32")
+        return w
+    return {
+        "noisy": rd(r["noisy_file"]), "clean": rd(r["clean_file"]),
+        "category": r["categories"], "snr_db": r["snr_db"],
+        "language": r["languages"], "index": int(r["index"]),
+        "boundaries_s": [float(x) for x in r["boundaries_s"].split("|")],
+        "segments": int(r["segments"]),
+    }
+
+
 def testset_index(split):
     """The frozen clips, with enough detail to choose one worth listening to."""
     import csv
+    if split == "demo":
+        return [{"index": int(r["index"]), "category": r["categories"],
+                 "snr_db": r["snr_db"], "language": r["languages"],
+                 "speaker_id": "", "seconds": float(r["seconds"]),
+                 "segments": int(r["segments"])}
+                for r in demo_rows()]
     path = os.path.join(MIXTURE_DIR, "test_mixtures_manifest.csv")
     if not os.path.exists(path):
         return []

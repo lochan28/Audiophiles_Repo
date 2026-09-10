@@ -49,6 +49,21 @@ SNR_RANGE = (-15.0, 25.0)
 # able to push past the range the model was trained on is the point of a lab:
 # it shows where the model falls apart, which the frozen sets never will.
 
+MAX_UPLOAD_SECONDS = 120.0
+# Longest uploaded clip the lab will mix. Two minutes is far more than any
+# demonstration needs and keeps one request from tying the server up. The model
+# itself has no length limit, so raising this costs memory and time only.
+
+SPEECH_GATE_DB = -35.0
+# How far below the loudest 10 ms frame a frame may sit and still count as
+# speech, when measuring the level of an UPLOADED clip.
+# WHY IT EXISTS: SNR is defined against the power of the speech, not of the
+# whole file. A recording that opens with three seconds of room tone would
+# have its average power dragged down by that silence, and every noise layer
+# would then be scaled quieter than the number you asked for. Gating fixes it.
+# LOWER (-50) counts quiet breaths and room tone as speech; HIGHER (-25)
+# keeps only the loud parts and makes noise louder for a given SNR.
+
 
 # ═══════════════════════════════════════════════════════════════════
 #  LOCKED — set by the data and the trained models, do not change
@@ -102,7 +117,7 @@ def _resolve(rel):
     return path
 
 
-def fit_to_window(noise, offset=0.0):
+def fit_to_window(noise, offset=0.0, n=CLIP_SAMPLES):
     """Make a noise clip exactly one window long.
 
     Short clips are tiled rather than zero-padded: silence would quietly
@@ -112,47 +127,139 @@ def fit_to_window(noise, offset=0.0):
     noise file can be used twice without the two layers being identical.
     """
     if len(noise) == 0:
-        return np.zeros(CLIP_SAMPLES, dtype=np.float32)
+        return np.zeros(n, dtype=np.float32)
     start = int(offset * len(noise)) % len(noise)
     rolled = np.roll(noise, -start)
-    if len(rolled) < CLIP_SAMPLES:
-        reps = int(np.ceil(CLIP_SAMPLES / len(rolled)))
+    if len(rolled) < n:
+        reps = int(np.ceil(n / len(rolled)))
         rolled = np.tile(rolled, reps)
-    return np.ascontiguousarray(rolled[:CLIP_SAMPLES], dtype=np.float32)
+    return np.ascontiguousarray(rolled[:n], dtype=np.float32)
+
+
+def active_mask(wav, frame=160):
+    """Which samples of an arbitrary recording count as speech.
+
+    A dataset clip has a known speech span because we placed it ourselves. An
+    uploaded file does not, so its level has to be measured rather than looked
+    up. This gates on per-frame RMS relative to the loudest frame, which is
+    crude but enough to stop leading and trailing silence from making every
+    noise layer quieter than requested.
+
+    Falls back to "all of it" if the gate would reject everything, so a very
+    flat recording still mixes rather than erroring.
+    """
+    n = (len(wav) // frame) * frame
+    if n == 0:
+        return np.ones(len(wav), dtype=bool)
+    rms = np.sqrt((wav[:n].reshape(-1, frame) ** 2).mean(axis=1) + 1e-20)
+    keep = rms >= rms.max() * (10.0 ** (SPEECH_GATE_DB / 20.0))
+    mask = np.repeat(keep, frame)
+    if len(mask) < len(wav):
+        mask = np.concatenate([mask, np.zeros(len(wav) - len(mask), bool)])
+    return mask if mask.any() else np.ones(len(wav), dtype=bool)
 
 
 # ---------------------------------------------------------------- mixing
 
-def build(speech_file, layers, speech_offset=None):
-    """Mix one speech clip with several noise layers.
+MAX_SPEECH_CLIPS = 4
+# How many speech clips may be chained into one lab mixture. Each adds three
+# seconds, so 3 gives the ~9 s length used for demonstrations. The model has no
+# length limit; this only bounds how much a single request can ask for.
+
+
+def build(speech_file, layers, speech_offset=None, speech_wav=None,
+          speech_name=None):
+    """Mix speech with several noise layers.
+
+    Speech comes from one of two places:
+
+      * `speech_file` -- one dataset clip, or a list chained end to end. Each
+        sits in its own 3 second window, which is how the model was trained.
+      * `speech_wav`  -- raw float32 at 16 kHz, ANY length. This is the upload
+        path: the recording is used exactly as given, no padding and no
+        windowing, and its speech level is measured rather than assumed.
 
     layers: [{"file": <relative path>, "snr_db": float, "offset": float}]
+
+    Every noise layer is stretched to cover the whole recording, however long
+    that is -- a 3 second noise clip under a 40 second upload is repeated
+    until it reaches the end. See fit_to_window.
 
     Returns a dict with the noisy and clean signals plus a full account of
     what was actually done -- per-layer scale factors and the combined SNR --
     because the whole point of the lab is being able to see why a mixture
     sounds the way it does.
     """
-    speech = load_wav(_resolve(speech_file))
+    if speech_wav is not None:
+        clean = np.ascontiguousarray(speech_wav, dtype=np.float32)
+        cap = int(MAX_UPLOAD_SECONDS * TARGET_SR)
+        truncated = len(clean) > cap
+        clean = clean[:cap]
+        if clean.size == 0:
+            raise ValueError("uploaded audio is empty")
+        mask = active_mask(clean)
+        idx = np.flatnonzero(mask)
+        return _mix(clean, [(int(idx[0]), int(idx[-1]) + 1)], mask, layers,
+                    files=[speech_name or "uploaded audio"],
+                    truncated=truncated)
+
+    # One clip or several chained end to end. Several is what makes a lab
+    # mixture long enough to demonstrate: the listener settles in, and the
+    # noise underneath can change while the speech keeps going.
+    files = [speech_file] if isinstance(speech_file, str) else list(speech_file)
+    files = files[:MAX_SPEECH_CLIPS]
 
     # Deterministic placement unless asked otherwise, so re-mixing the same
     # choices gives the same audio and A/B comparisons stay honest.
     rng = np.random.default_rng(0 if speech_offset is None else None)
-    clean, start, end = place_in_window(speech, rng)
-    if speech_offset is not None and len(speech) < CLIP_SAMPLES:
-        start = int(np.clip(speech_offset, 0.0, 1.0)
-                    * (CLIP_SAMPLES - len(speech)))
-        clean = np.zeros(CLIP_SAMPLES, dtype=np.float32)
-        clean[start:start + len(speech)] = speech
-        end = start + len(speech)
+    blocks, spans = [], []
+    for k, f in enumerate(files):
+        speech = load_wav(_resolve(f))
+        placed, s0, e0 = place_in_window(speech, rng)
+        if speech_offset is not None and len(speech) < CLIP_SAMPLES:
+            s0 = int(np.clip(speech_offset, 0.0, 1.0)
+                     * (CLIP_SAMPLES - len(speech)))
+            placed = np.zeros(CLIP_SAMPLES, dtype=np.float32)
+            placed[s0:s0 + len(speech)] = speech
+            e0 = s0 + len(speech)
+        blocks.append(placed)
+        spans.append((k * CLIP_SAMPLES + s0, k * CLIP_SAMPLES + e0))
 
-    speech_power = float(np.mean(clean[start:end] ** 2))
-    stack = np.zeros(CLIP_SAMPLES, dtype=np.float32)
+    clean = np.concatenate(blocks).astype(np.float32)
+    return _mix(clean, spans, None, layers, files=files, truncated=False)
+
+
+def _mix(clean, spans, mask, layers, files, truncated):
+    """The mixing itself, shared by the dataset path and the upload path.
+
+    `spans` are the speech-active regions used to measure level. `mask` is an
+    optional per-sample version of the same thing, which the upload path uses
+    because its active region is gated rather than contiguous.
+
+    Keeping one implementation matters: if the two paths measured level
+    differently, an SNR chosen in the lab would mean two different things
+    depending on where the speech came from.
+    """
+    window = len(clean)
+    start, end = spans[0][0], spans[-1][1]
+
+    # Speech power over the speech-active regions ONLY, exactly as
+    # mixing.mix_at_snr does. Averaging across the padding or the silence
+    # would understate it and make every layer quieter than requested.
+    def level(sig):
+        act = sig[mask] if mask is not None else             np.concatenate([sig[a:b] for a, b in spans])
+        return float(np.mean(act ** 2)) if act.size else 0.0
+
+    speech_power = level(clean)
+    stack = np.zeros(window, dtype=np.float32)
     used = []
 
     for layer in layers[:MAX_NOISES]:
+        # fit_to_window repeats a short noise clip until it covers the whole
+        # recording, so a 3 second siren under a 40 second upload simply
+        # continues rather than stopping a tenth of the way in.
         noise = fit_to_window(load_wav(_resolve(layer["file"])),
-                              float(layer.get("offset", 0.0)))
+                              float(layer.get("offset", 0.0)), window)
         snr_db = float(np.clip(layer.get("snr_db", DEFAULT_SNR_DB),
                                SNR_RANGE[0], SNR_RANGE[1]))
         noise_power = float(np.mean(noise ** 2))
@@ -168,6 +275,7 @@ def build(speech_file, layers, speech_offset=None):
             "snr_db": snr_db,
             "scale": scale,
             "offset": float(layer.get("offset", 0.0)),
+            "repeats": window / max(len(load_wav(_resolve(layer["file"]))), 1),
         })
 
     noisy = clean + stack
@@ -183,7 +291,7 @@ def build(speech_file, layers, speech_offset=None):
         stack = stack * shrink
 
     stack_power = float(np.mean(stack ** 2))
-    sp = float(np.mean(clean[start:end] ** 2))
+    sp = level(clean)
     combined = (10.0 * np.log10(sp / stack_power)
                 if sp > EPS and stack_power > EPS else None)
 
@@ -191,13 +299,16 @@ def build(speech_file, layers, speech_offset=None):
         "noisy": noisy.astype(np.float32),
         "clean": clean.astype(np.float32),
         "noise_only": stack.astype(np.float32),
-        "speech_file": speech_file,
+        "speech_file": " + ".join(files),
+        "speech_files": files,
         "speech_span": [int(start), int(end)],
+        "spans": [[int(a), int(b)] for a, b in spans],
         "layers": used,
         "combined_snr_db": combined,
         "clipped": shrink < 1.0,
         "shrink": shrink,
-        "seconds": CLIP_SAMPLES / TARGET_SR,
+        "truncated": truncated,
+        "seconds": window / TARGET_SR,
     }
 
 

@@ -530,7 +530,7 @@ function samplesPanel() {
       <audio controls preload="none" src="/files/${n}/samples/${c.refs[t]}"></audio></div>` : "";
     const first = c.epochs[c.epochs.length - 1];
     return `<div class="clip">
-      <h4>${c.category} <span class="muted">clip ${c.index}</span></h4>
+      <h4>${Array.isArray(c.category) ? c.category.join(", ") : c.category} <span class="muted">clip ${c.index}</span></h4>
       ${ref("noisy")}
       <div class="row"><span>enhanced</span>
         <select onchange="pickEpoch(this,'${n}')">${eps}</select></div>

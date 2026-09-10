@@ -30,6 +30,7 @@ someone actually opens the bench or the lab.
 import os
 import re
 import json
+import threading
 import argparse
 import webbrowser
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
@@ -56,9 +57,18 @@ DASHBOARD_GET = ("/api/runs", "/api/compare", "/api/source")
 DASHBOARD_GET_PREFIX = ("/api/run/", "/files/")
 DASHBOARD_POST = ("/api/stop", "/api/stop/cancel")
 
+# Uploaded lab audio, held in memory by token. Kept OUT of the mix request so
+# the SNR sliders can be re-tried without sending the file again -- which is
+# the difference between a lab you can iterate in and one you cannot.
+_UPLOADS = {}
+_UPLOAD_ORDER = []
+_UPLOAD_LIMIT = 8
+_UPLOAD_LOCK = threading.Lock()
+_UPLOAD_SEQ = 0
+
 DEMO_GET = ("/api/info", "/api/testset", "/api/analyze/test")
 DEMO_GET_PREFIX = ("/audio/",)
-DEMO_POST = ("/api/analyze/upload",)
+DEMO_POST = ("/api/analyze/upload", "/api/stream")
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -165,6 +175,31 @@ class Handler(BaseHTTPRequestHandler):
     def lab_post(self, route, q):
         import lab_core
         raw = self.read_body()
+
+        if route == "/api/lab/upload":
+            global _UPLOAD_SEQ
+            import numpy as np
+            wav = np.frombuffer(raw, dtype="<f4").astype(np.float32)
+            if wav.size == 0:
+                return self.send_json({"error": "no audio"}, 400)
+            cap = int(lab_core.MAX_UPLOAD_SECONDS * lab_core.TARGET_SR)
+            truncated = wav.size > cap
+            wav = np.ascontiguousarray(wav[:cap])
+            name = q.get("name", [""])[0][:120] or "uploaded audio"
+            with _UPLOAD_LOCK:
+                _UPLOAD_SEQ += 1
+                token = f"u{_UPLOAD_SEQ:06x}"
+                _UPLOADS[token] = (wav, name)
+                _UPLOAD_ORDER.append(token)
+                while len(_UPLOAD_ORDER) > _UPLOAD_LIMIT:
+                    _UPLOADS.pop(_UPLOAD_ORDER.pop(0), None)
+            return self.send_json({
+                "token": token, "name": name,
+                "seconds": wav.size / lab_core.TARGET_SR,
+                "truncated": truncated,
+                "max_seconds": lab_core.MAX_UPLOAD_SECONDS,
+            })
+
         if route != "/api/lab/mix":
             return self.send_json({"error": f"no route {route}"}, 404)
         try:
@@ -173,16 +208,28 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"error": "bad json"}, 400)
 
         speech = body.get("speech")
+        upload = body.get("speech_upload")
         layers = body.get("layers") or []
         run = body.get("run")
-        if not speech:
+        if not speech and not upload:
             return self.send_json({"error": "no speech clip chosen"}, 400)
         if run is not None and not self._safe(run):
             return self.send_json({"error": "bad run"}, 400)
 
+        wav = name = None
+        if upload:
+            with _UPLOAD_LOCK:
+                held = _UPLOADS.get(upload)
+            if held is None:
+                return self.send_json(
+                    {"error": "that upload has expired - send the file again"},
+                    404)
+            wav, name = held
+
         try:
             mix = lab_core.build(speech, layers,
-                                 speech_offset=body.get("speech_offset"))
+                                 speech_offset=body.get("speech_offset"),
+                                 speech_wav=wav, speech_name=name)
         except (ValueError, FileNotFoundError) as e:
             return self.send_json({"error": str(e)}, 400)
 
@@ -209,6 +256,9 @@ class Handler(BaseHTTPRequestHandler):
             "combined_snr_db": mix["combined_snr_db"],
             "clipped": mix["clipped"],
             "speech_span": mix["speech_span"],
+            "seconds": mix["seconds"],
+            "truncated": mix.get("truncated", False),
+            "uploaded": bool(upload),
         }
         return self.send_json(out)
 

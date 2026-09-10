@@ -124,6 +124,28 @@
   .prob .n { text-align: right; font-variant-numeric: tabular-nums;
              color: var(--dim); }
 
+  /* ---- latency evidence ---- */
+  .deadline { position: relative; height: 132px; border: 1px solid var(--line);
+              border-radius: 9px; background: var(--bg); padding: 10px 12px 22px;
+              overflow: hidden; }
+  .bars { display: flex; align-items: flex-end; gap: 1px; height: 100%; }
+  .bars i { flex: 1; min-width: 1px; background: var(--good); border-radius: 1px 1px 0 0; }
+  .bars i.over { background: var(--bad); }
+  .dline { position: absolute; left: 12px; right: 12px; border-top: 2px dashed var(--bad); }
+  .dline span { position: absolute; right: 0; top: -16px; font-size: 10.5px;
+                font-weight: 700; color: var(--bad); }
+  .blabel { position: absolute; left: 12px; bottom: 5px; font-size: 10.5px; color: var(--dim); }
+  .blabel.r { left: auto; right: 12px; }
+
+  .budget { display: flex; height: 30px; border-radius: 7px; overflow: hidden;
+            border: 1px solid var(--line); font-size: 10.5px; font-weight: 650; }
+  .budget div { display: flex; align-items: center; justify-content: center;
+                color: #fff; white-space: nowrap; overflow: hidden; }
+  .budget .look { background: #3B4E9B; }
+  .budget .chunk { background: var(--accent); }
+  .budget .comp { background: var(--bad); }
+  .budget .free { background: var(--line); color: var(--dim); }
+
   .scrollx { overflow-x: auto; -webkit-overflow-scrolling: touch; }
   .status { font-size: 12.5px; color: var(--dim); min-height: 20px; }
   .err { color: var(--bad); }
@@ -178,7 +200,8 @@
     <div class="pane on" id="pane-testset">
       <div class="row">
         <select id="split">
-          <option value="testing">testing (held out, never tuned on)</option>
+          <option value="demo">demo clips - 9 s, noise changes mid-clip</option>
+          <option value="testing" selected>testing (held out, never tuned on)</option>
           <option value="validation">validation (tuned against)</option>
         </select>
         <select id="category"><option value="">every noise type</option></select>
@@ -255,7 +278,9 @@
     <h2>6 · Could this run live?</h2>
     <div class="panel">
       <div class="cards" id="timing"></div>
-      <div class="muted" id="timingNote" style="margin-top:10px"></div>
+      <div id="deadlineBox" style="margin-top:14px"></div>
+      <div id="budgetBox" style="margin-top:16px"></div>
+      <div class="muted" id="timingNote" style="margin-top:12px"></div>
     </div>
 
     <h2>7 · The path your audio just took</h2>
@@ -359,10 +384,18 @@ async function loadClips() {
 function fillClips() {
   const f = category.value;
   const list = S.clips.filter(c => !f || c.category === f);
-  clip.innerHTML = list.map(c =>
-    `<option value="${c.index}">#${String(c.index).padStart(3, "0")} · `
-    + `${c.category} · ${c.snr_db.toFixed(1)} dB · ${c.language}</option>`).join("")
-    || `<option value="">none</option>`;
+  // A demo clip is three mixtures joined, so its category, SNR and language
+  // are pipe-joined strings rather than single values. Format both shapes.
+  clip.innerHTML = list.map(c => {
+    const id = `#${String(c.index).padStart(3, "0")}`;
+    if (typeof c.snr_db === "string") {
+      const cats = c.category.split("|").join(" → ");
+      return `<option value="${c.index}">${id} · ${c.seconds.toFixed(1)} s `
+           + `· ${cats}</option>`;
+    }
+    return `<option value="${c.index}">${id} · ${c.category} `
+         + `· ${c.snr_db.toFixed(1)} dB · ${c.language}</option>`;
+  }).join("") || `<option value="">none</option>`;
 }
 
 // --------------------------------------------------------------- running
@@ -565,9 +598,10 @@ function show(d) {
          <span class="n">${(r.p * 100).toFixed(0)}%</span>
        </div>`).join("")
       + (truth ? `<div class="muted" style="margin-top:8px">Actual noise:
-          <b class="mono">${truth}</b> — the model guessed
+          <b class="mono">${truth.split("|").join(", ")}</b> — the model guessed
           <b class="mono">${d.aux.predicted}</b>
-          ${d.aux.predicted === truth ? "✓" : "✗"}</div>` : "");
+          ${truth.split("|").includes(d.aux.predicted) ? "✓" : "✗"}
+          ${truth.includes("|") ? "<br>A demo clip carries three noise types and the head names only one, so any of the three counts." : ""}</div>` : "");
   } else {
     probs.innerHTML = `<div class="muted">This checkpoint has no classifier head.</div>`;
   }
@@ -586,6 +620,68 @@ function show(d) {
     ${tcard("End-to-end delay", `${total.toFixed(0)} ms`,
             `${m.lookahead_ms.toFixed(0)} lookahead + ${m.chunk_ms.toFixed(0)} chunk + compute`,
             total <= 800)}`;
+  // ---- the deadline chart: every chunk, against the 100 ms it must beat ----
+  const st = d.stream && !d.stream.error ? d.stream : null;
+  if (st) {
+    const S = st.summary, cs = st.chunks;
+    const scale = Math.max(S.deadline_ms, S.worst_ms * 1.15);
+    const bars = cs.map(c => {
+      const h = Math.max(1, (c.total_ms / scale) * 100);
+      return `<i class="${c.total_ms > S.deadline_ms ? "over" : ""}" `
+           + `style="height:${h.toFixed(2)}%" title="${c.total_ms.toFixed(2)} ms"></i>`;
+    }).join("");
+    // The dashed line sits where the deadline falls on the same scale, so the
+    // gap between the bars and the line IS the headroom, at a glance.
+    const dy = 10 + (1 - S.deadline_ms / scale) * 100;
+    deadlineBox.innerHTML = `
+      <div class="row" style="justify-content:space-between;margin-bottom:6px">
+        <b style="font-size:12.5px">Every 100 ms chunk, timed against its deadline</b>
+        <span class="${S.missed ? "down" : "up"}" style="font-weight:700;font-size:12.5px">
+          ${S.missed ? S.missed + " missed" : "0 missed ✓"}</span>
+      </div>
+      <div class="deadline">
+        <div class="bars">${bars}</div>
+        <div class="dline" style="top:${dy}px"><span>100 ms deadline</span></div>
+        <div class="blabel">${S.chunks} chunks</div>
+        <div class="blabel r">worst ${S.worst_ms.toFixed(1)} ms &middot;
+             median ${S.median_ms.toFixed(1)} ms</div>
+      </div>
+      <div class="muted" style="margin-top:6px">
+        Measured by running the model the way a live system would - one chunk at
+        a time, hidden state carried between them. Each bar is one chunk. An
+        average would hide the only question that matters for real time:
+        <b>did every chunk make it?</b></div>`;
+  } else {
+    deadlineBox.innerHTML = "";
+  }
+
+  // ---- the delay budget, drawn to scale against 800 ms ----
+  const BUD = 800;
+  const seg = (cls, ms, label) => ms <= 0 ? "" :
+    `<div class="${cls}" style="width:${(ms / BUD * 100).toFixed(2)}%">${
+      (ms / BUD) > 0.07 ? label : ""}</div>`;
+  budgetBox.innerHTML = `
+    <div class="row" style="justify-content:space-between;margin-bottom:6px">
+      <b style="font-size:12.5px">Where the ${total.toFixed(0)} ms actually goes</b>
+      <span class="up" style="font-weight:700;font-size:12.5px">
+        ${(BUD - total).toFixed(0)} ms of budget unused</span>
+    </div>
+    <div class="budget">
+      ${seg("look", m.lookahead_ms, `lookahead ${m.lookahead_ms.toFixed(0)} ms`)}
+      ${seg("chunk", m.chunk_ms, `chunk wait ${m.chunk_ms.toFixed(0)} ms`)}
+      ${seg("comp", Math.max(compute, 6), `compute ${compute.toFixed(1)} ms`)}
+      ${seg("free", BUD - total - Math.max(0, 6 - compute),
+            `${(BUD - total).toFixed(0)} ms headroom`)}
+    </div>
+    <div class="row" style="justify-content:space-between;margin-top:4px">
+      <span class="muted">0 ms</span><span class="muted">800 ms budget</span>
+    </div>
+    <div class="muted" style="margin-top:6px">
+      The compute block is drawn at a minimum width to stay visible - it is
+      really only <b>${compute.toFixed(2)} ms</b>. Almost all of the delay is
+      design choice, not silicon: waiting for audio to arrive, and the
+      lookahead we chose to buy.</div>`;
+
   timingNote.innerHTML = `The budget for this project is 500–800 ms. `
     + (total <= 800
       ? `<b class="up">This fits, with ${(800 - total).toFixed(0)} ms to spare.</b>`

@@ -61,6 +61,9 @@
   button.act:hover { border-color: var(--accent); color: var(--accent); }
   button.act[disabled] { opacity: .45; cursor: not-allowed; }
   button.go { border-color: var(--accent); color: var(--accent); }
+  button.tab { color: var(--dim); font-weight: 550; }
+  button.tab.on { color: var(--ink); border-color: var(--accent);
+                  box-shadow: inset 0 -2px 0 var(--accent); }
   button.x { border-color: var(--line); color: var(--dim); padding: 5px 9px; }
   button.x:hover { border-color: var(--bad); color: var(--bad); }
 
@@ -114,6 +117,25 @@
   .axis { display: flex; justify-content: space-between; font-size: 10.5px;
           color: var(--dim); margin-top: 2px; }
 
+  .deadline { position: relative; height: 128px; border: 1px solid var(--line);
+              border-radius: 9px; background: var(--bg); padding: 10px 12px 22px;
+              overflow: hidden; }
+  .bars { display: flex; align-items: flex-end; gap: 1px; height: 100%; }
+  .bars i { flex: 1; min-width: 1px; background: var(--good); border-radius: 1px 1px 0 0; }
+  .bars i.over { background: var(--bad); }
+  .dline { position: absolute; left: 12px; right: 12px; border-top: 2px dashed var(--bad); }
+  .dline span { position: absolute; right: 0; top: -16px; font-size: 10.5px;
+                font-weight: 700; color: var(--bad); }
+  .blabel { position: absolute; left: 12px; bottom: 5px; font-size: 10.5px; color: var(--dim); }
+  .blabel.r { left: auto; right: 12px; }
+  .budget { display: flex; height: 30px; border-radius: 7px; overflow: hidden;
+            border: 1px solid var(--line); font-size: 10.5px; font-weight: 650; }
+  .budget div { display: flex; align-items: center; justify-content: center;
+                color: #fff; white-space: nowrap; overflow: hidden; }
+  .budget .look { background: #3B4E9B; }
+  .budget .chunk { background: var(--accent); }
+  .budget .comp { background: var(--bad); }
+  .budget .free { background: var(--line); color: var(--dim); }
   .status { font-size: 12.5px; color: var(--dim); min-height: 20px; }
   .err { color: var(--bad); }
   .warnbox { border-left: 3px solid var(--warn); }
@@ -149,6 +171,26 @@
 <main>
   <h2>1 · Choose a voice</h2>
   <div class="panel">
+    <div class="row" style="margin-bottom:12px">
+      <button class="act tab on" data-pane="dataset">From the dataset</button>
+      <button class="act tab" data-pane="upload">Upload your own audio</button>
+    </div>
+
+    <div class="pane" id="pane-upload" style="display:none">
+      <div class="row">
+        <input type="file" id="file" accept="audio/*" class="grow">
+        <button class="act" id="upBtn" disabled>Load</button>
+      </div>
+      <div class="status" id="upStatus" style="margin-top:8px"></div>
+      <div class="hint" style="margin-top:6px">
+        Any format your browser can play, any length up to two minutes. It is
+        decoded and resampled to 16 kHz mono <b>in the browser</b>, so nothing
+        about codecs reaches the server. Noise clips are repeated as many times
+        as needed to cover the whole recording, however long it is.
+      </div>
+    </div>
+
+    <div class="pane" id="pane-dataset">
     <div class="row">
       <select id="split">
         <option value="testing">testing</option>
@@ -157,11 +199,16 @@
       </select>
       <select id="language"><option value="">every language</option></select>
       <select id="speech" class="grow"></select>
+      <select id="clipLen">
+        <option value="1">3 s (one clip)</option>
+        <option value="3" selected>9 s (three clips, for demos)</option>
+      </select>
     </div>
     <div class="hint" style="margin-top:8px">
       Every clip sits in a 3-second window. Shorter clips are placed inside it,
       and the SNR below is measured only over the part where someone is
       actually speaking — not over the silence.
+    </div>
     </div>
   </div>
 
@@ -190,6 +237,29 @@
     <div class="status" id="status" style="margin-top:10px"></div>
   </div>
 
+  <h2>4 &middot; Live from the microphone</h2>
+  <div class="panel">
+    <div class="row">
+      <select id="micDev" class="grow"></select>
+      <select id="outDev" class="grow"></select>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <button class="act go" id="liveBtn">Start listening</button>
+      <button class="act" id="abBtn" disabled>Hearing: processed</button>
+      <span class="grow"></span>
+      <span id="liveStat" class="status"></span>
+    </div>
+    <div class="status" style="margin-top:10px">
+      Speak into the microphone and hear the model clean it as you go. Added
+      delay is about 230&nbsp;ms: 100&nbsp;ms to fill a chunk and 128&nbsp;ms
+      the model holds back before a sample is final. <b>Use headphones</b> &mdash;
+      on speakers the cleaned output feeds back into the microphone and the
+      model starts fighting its own echo. The A/B button swaps between the raw
+      microphone and the processed stream without a gap, so the difference is
+      the only thing that changes.
+    </div>
+  </div>
+
   <div id="results" style="display:none">
     <h2>What you built</h2>
     <div class="panel" id="recipe"></div>
@@ -208,13 +278,20 @@
       <div id="specs"></div>
     </div>
 
+    <h2>Could this run live?</h2>
+    <div class="panel">
+      <div id="deadlineBox"></div>
+      <div id="budgetBox" style="margin-top:16px"></div>
+    </div>
+
     <h2>What the model thinks the noise is</h2>
     <div class="panel" id="auxbox"></div>
   </div>
 </main>
 
 <script>
-const S = {src: null, layers: [], result: null, audios: {}, active: null, nextId: 1};
+const S = {src: null, layers: [], result: null, audios: {}, active: null,
+           nextId: 1, upload: null, source: "dataset"};
 const fmt = (v, d = 3) => (v === null || v === undefined || Number.isNaN(v))
   ? "—" : (+v).toFixed(d);
 
@@ -337,15 +414,76 @@ function renderLayers() {
 
 // ------------------------------------------------------------------- mix
 
+// Decode whatever the browser can play, then resample to the 16 kHz mono the
+// model was trained on. Doing it here means the server needs no codecs.
+async function toMono16k(arrayBuffer) {
+  const ac = new (window.AudioContext || window.webkitAudioContext)();
+  const decoded = await ac.decodeAudioData(arrayBuffer);
+  const off = new OfflineAudioContext(
+    1, Math.max(1, Math.ceil(decoded.duration * 16000)), 16000);
+  const src = off.createBufferSource();
+  src.buffer = decoded; src.connect(off.destination); src.start();
+  const out = await off.startRendering();
+  ac.close();
+  return out.getChannelData(0);
+}
+
+// Uploaded once, mixed many times. The token lets you drag the SNR sliders and
+// re-mix without sending the file again, which is what makes it usable for
+// building an example rather than a one-shot.
+async function doUpload() {
+  const f = file.files[0];
+  if (!f) return;
+  upStatus.className = "status";
+  upStatus.innerHTML = `<span class="spin"></span>decoding…`;
+  upBtn.disabled = true;
+  try {
+    const pcm = await toMono16k(await f.arrayBuffer());
+    const r = await fetch("/api/lab/upload?name=" + encodeURIComponent(f.name),
+      {method: "POST", headers: {"Content-Type": "application/octet-stream"},
+       body: pcm.buffer});
+    const d = await r.json();
+    if (d.error) throw new Error(d.error);
+    S.upload = d;
+    upStatus.className = "status";
+    upStatus.innerHTML = `<b>${d.name}</b> loaded — ${d.seconds.toFixed(2)} s`
+      + (d.truncated
+         ? ` <b class="down">(truncated to the ${d.max_seconds}s limit)</b>` : "")
+      + `. Add noise below and press Mix.`;
+  } catch (e) {
+    S.upload = null;
+    upStatus.className = "status err";
+    upStatus.textContent = "could not load that file: " + e.message;
+  }
+  upBtn.disabled = false;
+}
+
 async function mix() {
-  if (!speech.value) { status.className = "status err";
+  const uploading = S.source === "upload";
+  if (uploading && !S.upload) { status.className = "status err";
+    status.textContent = "load an audio file first"; return; }
+  if (!uploading && !speech.value) { status.className = "status err";
     status.textContent = "pick a speech clip first"; return; }
   status.className = "status";
   status.innerHTML = `<span class="spin"></span>mixing and enhancing…`;
   mixBtn.disabled = true;
   try {
-    const body = {
-      speech: speech.value, run: run.value,
+    // At 9 s we chain this clip and the next two from the same filtered list,
+    // so the speaker keeps talking while the noise underneath changes.
+    // NOTE: the picker id is clipLen, not length -- window.length is a
+    // read-only built-in, so an element with id="length" never becomes a
+    // global and the lookup would silently return a number.
+    const opts = [...speech.options].map(o => o.value).filter(Boolean);
+    const at = Math.max(0, opts.indexOf(speech.value));
+    const n = +clipLen.value;
+    const chosen = n === 1 ? speech.value
+      : Array.from({length: n}, (_, k) => opts[(at + k) % opts.length]);
+    const body = uploading
+      ? {speech_upload: S.upload.token, run: run.value,
+         layers: S.layers.filter(L => L.file)
+           .map(L => ({file: L.file, snr_db: L.snr}))}
+      : {
+      speech: chosen, run: run.value,
       layers: S.layers.filter(L => L.file)
         .map(L => ({file: L.file, snr_db: L.snr})),
     };
@@ -389,7 +527,9 @@ function show(d) {
   const order = [["clean", "Clean speech", "before any noise"],
                  ["noise_only", "The noise alone", "everything you stacked"],
                  ["noisy", "Mixture", "what the model receives"],
-                 ["enhanced", "Enhanced", "what came back"]];
+                 ["enhanced", "Enhanced", "stage 1 only — the mask"],
+                 ["postfiltered", "Plus the post-filter",
+                  "stage 2 adds back what the mask removed"]];
   players.innerHTML = order.filter(([k]) => d.audio[k]).map(([k, t, s]) =>
     `<div class="player"><div class="t">${t}</div><div class="d">${s}</div>
      <audio controls preload="auto" data-k="${k}" src="${d.audio[k]}"></audio></div>`
@@ -412,13 +552,19 @@ function show(d) {
       <div class="v ${b >= t ? "up" : ""}">${fmt(b, DP[k])}</div>
       <div class="s">${fmt(a, DP[k])} → target ${t}
         <b class="${g >= 0 ? "up" : "down"}">${g >= 0 ? "+" : ""}${fmt(g, DP[k])}</b></div>
+      ${m.postfiltered && m.postfiltered[k] !== null
+        ? `<div class="s">+ post-filter <b class="${
+             m.postfiltered[k] >= b ? "up" : "down"}">${fmt(
+             m.postfiltered[k], DP[k])}</b></div>` : ""}
       <div class="bar"><i style="width:${(p*100).toFixed(1)}%;background:${
         b >= t ? "var(--good)" : "var(--accent)"}"></i></div></div>`;
   }).join("");
 
   const blocks = [["noisy", "Mixture", "speech plus everything you stacked"],
                   ["clean", "Clean speech", "the target"],
-                  ["enhanced", "Enhanced", "mixture with the mask applied"]];
+                  ["enhanced", "Enhanced", "mixture with the mask applied"],
+                  ["postfiltered", "Plus the post-filter",
+                   "stage 2 adds a correction on top"]];
   specs.innerHTML = blocks.filter(([k]) => d.spectrograms[k]).map(([k, t, n]) =>
     `<div class="spec"><div class="cap"><b>${t}</b><span class="muted">${n}</span></div>
      <div class="specwrap"><canvas id="cv-${k}"></canvas>
@@ -467,7 +613,58 @@ function show(d) {
           ${(r.p*100).toFixed(0)}%</span></div>`).join("");
   } else auxbox.innerHTML = `<div class="hint">No classifier head on this model.</div>`;
 
+  drawLatency(d);
   results.scrollIntoView({behavior: "smooth", block: "start"});
+}
+
+// The latency evidence: every 100 ms chunk timed against the deadline it must
+// beat, plus where the end-to-end delay actually goes.
+function drawLatency(d) {
+  const st = d.stream && !d.stream.error ? d.stream : null;
+  if (st) {
+    const S = st.summary, cs = st.chunks;
+    const scale = Math.max(S.deadline_ms, S.worst_ms * 1.15);
+    const bars = cs.map(c => `<i class="${c.total_ms > S.deadline_ms ? "over" : ""}"`
+      + ` style="height:${Math.max(1, (c.total_ms / scale) * 100).toFixed(2)}%"`
+      + ` title="${c.total_ms.toFixed(2)} ms"></i>`).join("");
+    const dy = 10 + (1 - S.deadline_ms / scale) * 100;
+    deadlineBox.innerHTML = `
+      <div class="row" style="justify-content:space-between;margin-bottom:6px">
+        <b style="font-size:12.5px">Every 100 ms chunk, timed against its deadline</b>
+        <span class="${S.missed ? "down" : "up"}" style="font-weight:700;font-size:12.5px">
+          ${S.missed ? S.missed + " missed" : "0 missed ✓"}</span></div>
+      <div class="deadline"><div class="bars">${bars}</div>
+        <div class="dline" style="top:${dy}px"><span>100 ms deadline</span></div>
+        <div class="blabel">${S.chunks} chunks</div>
+        <div class="blabel r">worst ${S.worst_ms.toFixed(1)} ms &middot;
+          median ${S.median_ms.toFixed(1)} ms</div></div>
+      <div class="hint" style="margin-top:6px">Measured by running the model one
+        chunk at a time with hidden state carried between them, exactly as a live
+        system would. Each bar is one chunk.</div>`;
+  } else { deadlineBox.innerHTML = ""; }
+
+  const m = d.model, t = d.timing;
+  const compute = t.inference_ms * (m.chunk_ms / (t.audio_ms || 1));
+  const total = m.lookahead_ms + m.chunk_ms + compute, BUD = 800;
+  const seg = (cls, ms, label) => ms <= 0 ? "" :
+    `<div class="${cls}" style="width:${(ms / BUD * 100).toFixed(2)}%">${
+      (ms / BUD) > 0.07 ? label : ""}</div>`;
+  budgetBox.innerHTML = `
+    <div class="row" style="justify-content:space-between;margin-bottom:6px">
+      <b style="font-size:12.5px">Where the ${total.toFixed(0)} ms goes</b>
+      <span class="up" style="font-weight:700;font-size:12.5px">
+        ${(BUD - total).toFixed(0)} ms of budget unused</span></div>
+    <div class="budget">
+      ${seg("look", m.lookahead_ms, `lookahead ${m.lookahead_ms.toFixed(0)} ms`)}
+      ${seg("chunk", m.chunk_ms, `chunk wait ${m.chunk_ms.toFixed(0)} ms`)}
+      ${seg("comp", Math.max(compute, 6), "compute")}
+      ${seg("free", BUD - total - Math.max(0, 6 - compute),
+            `${(BUD - total).toFixed(0)} ms headroom`)}</div>
+    <div class="row" style="justify-content:space-between;margin-top:4px">
+      <span class="hint">0 ms</span><span class="hint">800 ms budget</span></div>
+    <div class="hint" style="margin-top:6px">The compute block is drawn at a
+      minimum width to stay visible — it is really only
+      <b>${compute.toFixed(2)} ms</b>.</div>`;
 }
 
 function pump() {
@@ -479,10 +676,216 @@ function pump() {
   if (!a.paused && !a.ended) requestAnimationFrame(pump);
 }
 
+document.querySelectorAll("button.tab").forEach(b => b.onclick = () => {
+  document.querySelectorAll("button.tab").forEach(x => x.classList.remove("on"));
+  b.classList.add("on");
+  S.source = b.dataset.pane;
+  document.getElementById("pane-dataset").style.display =
+    S.source === "dataset" ? "" : "none";
+  document.getElementById("pane-upload").style.display =
+    S.source === "upload" ? "" : "none";
+});
+file.onchange = () => { upBtn.disabled = !file.files[0]; };
+upBtn.onclick = doUpload;
 split.onchange = loadSources;
 language.onchange = fillSpeech;
 addBtn.onclick = () => addLayer();
 mixBtn.onclick = mix;
+
+// ------------------------------------------------------------------- live
+//
+// Capture -> POST 100 ms of float32 -> schedule the reply for playback.
+//
+// Why not the Web Audio graph end to end: the model lives in Python, so the
+// audio has to leave the browser either way. The only real choice is how it
+// is buffered, and a fixed chunk with a scheduled playback queue is what
+// keeps the output gapless when a request occasionally runs long.
+const micDev = document.getElementById("micDev");
+const outDev = document.getElementById("outDev");
+const liveBtn = document.getElementById("liveBtn");
+const abBtn = document.getElementById("abBtn");
+const liveStat = document.getElementById("liveStat");
+
+const SR = 16000, CHUNK = 1600;            // must match demo_core.CHUNK_MS
+let L = null;                              // live session state, or null
+
+async function listDevices() {
+  // Labels are blank until permission has been granted once, so this is
+  // called again after getUserMedia succeeds.
+  const d = await navigator.mediaDevices.enumerateDevices();
+  const fill = (sel, kind, none) => {
+    const keep = sel.value;
+    sel.innerHTML = "";
+    d.filter(x => x.kind === kind).forEach((x, i) => {
+      const o = document.createElement("option");
+      o.value = x.deviceId;
+      o.textContent = x.label || (none + " " + (i + 1));
+      sel.appendChild(o);
+    });
+    if (keep) sel.value = keep;
+  };
+  fill(micDev, "audioinput", "microphone");
+  fill(outDev, "audiooutput", "output");
+  // Firefox does not expose output devices at all; say so rather than
+  // leaving an empty box that looks broken.
+  if (!outDev.options.length) {
+    const o = document.createElement("option");
+    o.textContent = "system default (this browser cannot choose)";
+    outDev.appendChild(o);
+  }
+}
+
+async function startLive() {
+  const token = "t" + Math.random().toString(36).slice(2, 12);
+  const stream = await navigator.mediaDevices.getUserMedia({
+    audio: {
+      deviceId: micDev.value ? {exact: micDev.value} : undefined,
+      // The browser's own noise suppression would clean the audio before the
+      // model ever saw it, which would make the demo measure Chrome rather
+      // than us. Echo cancellation stays ON: without it the loudspeaker path
+      // howls immediately.
+      noiseSuppression: false, autoGainControl: false, echoCancellation: true,
+      channelCount: 1, sampleRate: SR
+    }
+  });
+  await listDevices();
+
+  const ctx = new AudioContext({sampleRate: SR});
+  await ctx.resume();
+
+  // One worklet, one job: hand 100 ms blocks to the main thread. Everything
+  // else -- the request, the queue, the A/B switch -- stays in normal code
+  // where it can be read.
+  const src = "class C extends AudioWorkletProcessor{" +
+    "constructor(){super();this.b=new Float32Array(" + CHUNK + ");this.n=0}" +
+    "process(i){const x=i[0][0];if(!x)return true;" +
+    "for(let k=0;k<x.length;k++){this.b[this.n++]=x[k];" +
+    "if(this.n===this.b.length){this.port.postMessage(this.b.slice());this.n=0}}" +
+    "return true}}registerProcessor('cap',C)";
+  await ctx.audioWorklet.addModule(
+    URL.createObjectURL(new Blob([src], {type: "text/javascript"})));
+
+  const node = new AudioWorkletNode(ctx, "cap");
+  ctx.createMediaStreamSource(stream).connect(node);
+  // A worklet with no destination can be starved of processing in some
+  // browsers; a silent sink keeps it scheduled.
+  const mute = ctx.createGain(); mute.gain.value = 0;
+  node.connect(mute).connect(ctx.destination);
+
+  // Playback goes through a MediaStream rather than ctx.destination so that
+  // setSinkId can point it at the chosen output device -- an AudioContext
+  // cannot be redirected this way in every browser, an <audio> element can.
+  const sink = ctx.createMediaStreamDestination();
+  const el = new Audio();
+  el.srcObject = sink.stream;
+  el.autoplay = true;
+  if (el.setSinkId && outDev.value) {
+    try { await el.setSinkId(outDev.value); } catch (e) { /* use default */ }
+  }
+  await el.play().catch(() => {});
+
+  // Two inputs, one at a time. Switching a gain rather than rebuilding the
+  // graph is what makes the A/B seamless.
+  const gRaw = ctx.createGain(), gWet = ctx.createGain();
+  gRaw.gain.value = 0; gWet.gain.value = 1;
+  ctx.createMediaStreamSource(stream).connect(gRaw).connect(sink);
+  gWet.connect(sink);
+
+  L = {token: token, stream: stream, ctx: ctx, el: el, gRaw: gRaw, gWet: gWet,
+       node: node, wet: true, next: 0, inflight: 0, late: 0, run: run.value};
+
+  node.port.onmessage = async (ev) => {
+    if (!L) return;
+    // Never queue requests. If one is still out, drop this chunk: a backlog
+    // turns into ever-growing delay, which is worse than a gap.
+    if (L.inflight > 0) { L.late++; return; }
+    L.inflight++;
+    const t0 = performance.now();
+    try {
+      const r = await fetch("/api/stream?token=" + L.token +
+                            "&run=" + encodeURIComponent(L.run),
+                            {method: "POST", body: ev.data.buffer});
+      if (!r.ok || !L) return;
+      const pcm = new Float32Array(await r.arrayBuffer());
+      if (pcm.length) schedule(pcm);
+      liveStat.textContent = Math.round(performance.now() - t0) + " ms/chunk" +
+                             (L.late ? ", " + L.late + " dropped" : "");
+    } catch (e) { /* page closing */ }
+    finally { if (L) L.inflight--; }
+  };
+
+  liveBtn.textContent = "Stop";
+  liveBtn.classList.remove("go");
+  abBtn.disabled = false;
+  liveStat.textContent = "starting...";
+}
+
+function schedule(pcm) {
+  // Append to a running clock. Scheduling against ctx.currentTime each time
+  // would re-introduce a gap whenever a request ran long; carrying `next`
+  // forward means a late chunk plays late once, not every time after.
+  const buf = L.ctx.createBuffer(1, pcm.length, SR);
+  buf.copyToChannel(pcm, 0);
+  const s = L.ctx.createBufferSource();
+  s.buffer = buf; s.connect(L.gWet);
+  const now = L.ctx.currentTime;
+  if (L.next < now + 0.02) L.next = now + 0.02;   // re-anchor after a stall
+  s.start(L.next);
+  L.next += buf.duration;
+}
+
+function stopLive() {
+  if (!L) return;
+  const l = L; L = null;
+  try { l.node.port.onmessage = null; l.node.disconnect(); } catch (e) {}
+  l.stream.getTracks().forEach(t => t.stop());
+  l.el.pause(); l.el.srcObject = null;
+  l.ctx.close();
+  fetch("/api/stream?token=" + l.token + "&close=1",
+        {method: "POST"}).catch(() => {});
+  liveBtn.textContent = "Start listening";
+  liveBtn.classList.add("go");
+  abBtn.disabled = true;
+  abBtn.textContent = "Hearing: processed";
+  liveStat.textContent = "";
+}
+
+liveBtn.onclick = () => {
+  if (L) return stopLive();
+  liveBtn.disabled = true;
+  startLive().catch(e => { liveStat.textContent = "microphone refused: " +
+                                                  e.message; stopLive(); })
+             .finally(() => { liveBtn.disabled = false; });
+};
+
+abBtn.onclick = () => {
+  if (!L) return;
+  L.wet = !L.wet;
+  // A short ramp, not a jump: switching a gain instantly clicks.
+  const t = L.ctx.currentTime, R = 0.015;
+  L.gWet.gain.setTargetAtTime(L.wet ? 1 : 0, t, R);
+  L.gRaw.gain.setTargetAtTime(L.wet ? 0 : 1, t, R);
+  abBtn.textContent = "Hearing: " + (L.wet ? "processed" : "raw mic");
+};
+
+outDev.onchange = async () => {
+  if (L && L.el.setSinkId && outDev.value) {
+    try { await L.el.setSinkId(outDev.value); } catch (e) {}
+  }
+};
+micDev.onchange = () => { if (L) { stopLive(); liveBtn.onclick(); } };
+window.addEventListener("beforeunload", stopLive);
+
+if (navigator.mediaDevices && navigator.mediaDevices.enumerateDevices) {
+  listDevices().catch(() => {});
+  navigator.mediaDevices.addEventListener("devicechange",
+                                          () => listDevices().catch(() => {}));
+} else {
+  liveBtn.disabled = true;
+  liveStat.textContent = "this browser will not give a microphone here " +
+                         "(needs localhost or https)";
+}
+
 boot().catch(e => { status.className = "status err";
                     status.textContent = "could not load: " + e; });
 </script>

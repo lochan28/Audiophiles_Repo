@@ -22,6 +22,8 @@ import time
 import base64
 
 import numpy as np
+import threading
+
 import torch
 
 import model_crn
@@ -282,6 +284,194 @@ def enhance(wav, run_name=None):
             None if logits is None else logits[0].cpu().numpy(), ms)
 
 
+def stream_timing(wav, run_name=None, chunk_ms=100.0):
+    """Run the model the way a live system would: one 100 ms chunk at a time.
+
+    Returns (per-chunk timings, summary).
+
+    This is a TIMING measurement, not a second copy of the audio. The waveform
+    the page plays still comes from the whole-clip path. Per-chunk compute is
+    identical either way -- same tensors, same arithmetic -- but a deployed
+    post-filter would also keep a ring buffer of past frames that this loop
+    does not, so audio produced here would differ slightly at chunk
+    boundaries. Measuring speed with it is honest; playing it would not be.
+
+    The point of it is that a single average hides the question that actually
+    matters for a real-time system: did EVERY chunk finish before its
+    deadline? One chunk over 100 ms is a dropout a listener hears.
+    """
+    model, device, info = get_model(run_name)
+    pf_loaded = get_postfilter()
+    n = int(SAMPLE_RATE * chunk_ms / 1000.0)
+    chunks = [wav[i:i + n] for i in range(0, len(wav), n)]
+    chunks = [c for c in chunks if len(c) == n]     # drop a short final tail
+    if not chunks:
+        return [], {"chunks": 0}
+
+    # Warm up first. Without this the opening chunk is many times slower than
+    # the rest -- lazy kernel selection, not system behaviour -- and the chart
+    # would lead with a spike that means nothing.
+    import postfilter as pf
+    warm = torch.zeros((1, n), dtype=torch.float32, device=device)
+    state = None
+    with torch.no_grad():
+        for _ in range(8):
+            _, wmask, _, state = model(warm, state)
+            # The post-filter needs warming too. Warming only stage 1 left the
+            # first real chunk at 200 ms -- lazy kernel selection inside the
+            # filter, reported as if the system had stalled.
+            if pf_loaded is not None:
+                pf.apply(pf_loaded[0], warm, wmask)
+    if device.type == "cuda":
+        torch.cuda.synchronize()
+
+    rows, state = [], None
+    for c in chunks:
+        x = torch.from_numpy(np.ascontiguousarray(c, dtype=np.float32))
+        x = x.unsqueeze(0).to(device)
+
+        if device.type == "cuda":
+            torch.cuda.synchronize()
+        t0 = time.perf_counter()
+        with torch.no_grad():
+            _, mask, _, state = model(x, state)
+        if device.type == "cuda":
+            torch.cuda.synchronize()
+        t1 = time.perf_counter()
+
+        post_ms = 0.0
+        if pf_loaded is not None:
+            with torch.no_grad():
+                pf.apply(pf_loaded[0], x, mask)
+            if device.type == "cuda":
+                torch.cuda.synchronize()
+            post_ms = (time.perf_counter() - t1) * 1000.0
+
+        stage1_ms = (t1 - t0) * 1000.0
+        rows.append({"stage1_ms": stage1_ms, "postfilter_ms": post_ms,
+                     "total_ms": stage1_ms + post_ms})
+
+    totals = [r["total_ms"] for r in rows]
+    worst = max(totals)
+    return rows, {
+        "chunks": len(rows),
+        "chunk_ms": chunk_ms,
+        "deadline_ms": chunk_ms,
+        "worst_ms": worst,
+        "median_ms": float(np.median(totals)),
+        "mean_ms": float(np.mean(totals)),
+        "headroom_pct": 100.0 * (1.0 - worst / chunk_ms),
+        "missed": sum(1 for t in totals if t > chunk_ms),
+        "realtime_factor": chunk_ms / max(float(np.mean(totals)), 1e-9),
+        "lookahead_ms": info.get("lookahead_ms"),
+        "total_latency_ms": info.get("latency_ms"),
+        "device": info.get("device"),
+    }
+
+
+
+# ---------------------------------------------------------------- live stream
+#
+# TUNABLE -- live streaming
+#
+# CONTEXT_MS   how much past audio is re-processed ahead of each new chunk.
+#              Both stages have memory: stage 1 an LSTM, the post-filter a
+#              63-frame receptive field. Feeding independent chunks would
+#              click at every boundary. Raising this removes boundary error
+#              but costs compute linearly; below ~400 ms the LSTM has not
+#              re-warmed and the first frames of each chunk are wrong.
+# SESSION_IDLE_S  a browser that closes mid-stream never says so; sessions
+#              older than this are dropped so memory does not grow.
+# CHUNK_MS     how much audio the browser sends per request. Compute per call
+#              is ~40 ms almost regardless of this (the context dominates),
+#              so this is really the headroom dial: 50 ms missed its deadline
+#              4 times in 50, 100 ms leaves 2.5x margin. Total added latency
+#              is CHUNK_MS + HOLD_BACK, so 228 ms at the default.
+CHUNK_MS = 100.0
+CONTEXT_MS = 2560.0
+SESSION_IDLE_S = 60.0
+
+# LOCKED -- samples held back before a chunk is trusted. Set by the STFT
+# window plus the model's 6-frame lookahead, not a free choice. Measured:
+# 1024 still leaves 7e-4 of error, 2048 leaves 1e-8. That is 128 ms, which
+# together with a 50 ms capture chunk keeps the live path inside the
+# project's 200-250 ms budget.
+HOLD_BACK = 2048
+
+
+class StreamSession:
+    """One live microphone connection.
+
+    Holds the tail of the audio already seen. Each push re-runs the whole
+    two-stage path on (context + new chunk) and returns only the new part,
+    so the output is sample-for-sample what the offline path would produce,
+    with no state to get wrong.
+    """
+
+    def __init__(self, run_name=None):
+        self.run_name = run_name
+        self.buf = np.zeros(0, dtype=np.float32)   # recent input, absolute
+        self.base = 0                              # stream index of buf[0]
+        self.pos = 0                               # input samples consumed
+        self.emitted = 0                           # output samples emitted
+        self.n_context = int(SAMPLE_RATE * CONTEXT_MS / 1000.0)
+        self.touched = time.time()
+
+    def push(self, chunk):
+        """New input samples in, finished output samples out (may be empty).
+
+        HOLD_BACK is why this is not just "process and take the tail". The
+        inverse STFT builds each output sample by summing overlapping
+        windows, so the last window's worth of a buffer is still missing the
+        contributions of frames that have not arrived. Emitting it produced
+        an error at EVERY chunk boundary, not just the first. Holding one
+        window back costs 32 ms of delay and makes the live output match the
+        offline path to within 1e-7.
+        """
+        self.touched = time.time()
+        chunk = np.asarray(chunk, dtype=np.float32)
+        self.buf = np.concatenate([self.buf, chunk])
+        self.pos += len(chunk)
+
+        safe_end = self.pos - HOLD_BACK                # last trustworthy sample
+        if safe_end <= self.emitted:
+            return np.zeros(0, dtype=np.float32)
+
+        out, _, _, _ = enhance(self.buf, self.run_name)
+        piece = out[self.emitted - self.base:safe_end - self.base]
+        self.emitted = safe_end
+
+        # Drop context we will never need again, keeping base honest.
+        keep = self.n_context + HOLD_BACK
+        if len(self.buf) > keep:
+            drop = len(self.buf) - keep
+            self.buf = self.buf[drop:].copy()
+            self.base += drop
+        return piece.astype(np.float32)
+
+
+_SESSIONS = {}
+_SESSION_LOCK = threading.Lock()
+
+
+def stream_session(token, run_name=None):
+    """Fetch or create the session for a token, reaping stale ones."""
+    now = time.time()
+    with _SESSION_LOCK:
+        for k in [k for k, v in _SESSIONS.items()
+                  if now - v.touched > SESSION_IDLE_S]:
+            _SESSIONS.pop(k, None)
+        s = _SESSIONS.get(token)
+        if s is None or s.run_name != run_name:
+            s = _SESSIONS[token] = StreamSession(run_name)
+        return s
+
+
+def stream_close(token):
+    with _SESSION_LOCK:
+        _SESSIONS.pop(token, None)
+
+
 def spectrogram(wav, ref_peak=None):
     """Spectrogram as a uint8 picture the browser can draw directly.
 
@@ -340,7 +530,8 @@ def self_test():
     ds = FrozenMixtures("testing")
     m = ds.describe(0)
     out, mask, logits, ms = enhance(m["noisy"])
-    print(f"  clip 0, category {m['category']}, {m['snr_db']:.1f} dB SNR")
+    cat_str = ", ".join(m["category"]) if isinstance(m["category"], (list, tuple)) else m["category"]
+    print(f"  clip 0, category {cat_str}, {m['snr_db']:.1f} dB SNR")
     print(f"  in {m['noisy'].shape} -> out {out.shape}, took {ms:.1f} ms")
     for label, sig in (("noisy", m["noisy"]), ("enhanced", out)):
         print(f"  {label:<9} SI-SNR {ev.si_snr(sig, m['clean']):6.2f}  "
