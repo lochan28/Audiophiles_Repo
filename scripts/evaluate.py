@@ -129,7 +129,8 @@ def evaluate(model, dataset, device, max_clips=None, batch_size=16,
             # here would silently index the matrix with a frame number.
             if logits is not None and getattr(
                     model, "aux_target", "category") == "category":
-                confusion[m["label"], int(logits[k].argmax())] += 1
+                lbl = m["label"][0] if isinstance(m["label"], (list, tuple)) else m["label"]
+                confusion[lbl, int(logits[k].argmax())] += 1
 
         if progress:
             done = min(start + batch_size, n)
@@ -151,10 +152,13 @@ def evaluate(model, dataset, device, max_clips=None, batch_size=16,
     by_category = {}
     grouped = collections.defaultdict(list)
     for r in per_clip:
-        grouped[r["category"]].append(r)
+        cats = r["category"] if isinstance(r["category"], (list, tuple)) else [r["category"]]
+        for c in cats:
+            grouped[c].append(r)
     for cat in classes:
         if grouped[cat]:
             by_category[cat] = summarise(grouped[cat])
+
 
     result = {
         "overall": summarise(per_clip),

@@ -117,8 +117,11 @@ def low_band_selection(n, fraction=SNR_LOW_FRACTION):
 MIN_SPEECH_SECONDS = 1.0        # shorter clean clips are skipped entirely
 MIN_SPEECH_SAMPLES = int(TARGET_SR * MIN_SPEECH_SECONDS)
 
+N_NOISES = 1                    # number of noise clips mixed into each training example
+
 PEAK_CEILING = 0.99             # mixtures are rescaled below this if they clip
 EPS = 1e-10
+
 
 
 def load_wav(path):
@@ -222,6 +225,45 @@ def mix_at_snr(speech, speech_span, noise, snr_db):
     return noisy.astype(np.float32), speech.astype(np.float32)
 
 
+def mix_many(speech, speech_span, noises, snr_db):
+    """Scale a list of noise clips so their combined sum hits snr_db, then add.
+
+    The total noise power budget is split equally among the clips. Apply the
+    clipping guard once at the end after summing.
+
+    Returns (noisy, clean). Both are rescaled by the same factor if the sum
+    would clip, so the pair stays consistent as an input/target pair.
+    """
+    if not isinstance(noises, (list, tuple)):
+        noises = [noises]
+    n_noises = len(noises)
+    if n_noises == 1:
+        return mix_at_snr(speech, speech_span, noises[0], snr_db)
+
+    start, end = speech_span
+    speech_power = float(np.mean(speech[start:end] ** 2))
+
+    scaled_noises = []
+    for noise in noises:
+        noise_power = float(np.mean(noise ** 2))
+        if speech_power < EPS or noise_power < EPS:
+            scale = 1.0 / np.sqrt(n_noises) if speech_power >= EPS else 1.0
+        else:
+            scale = np.sqrt(speech_power / (n_noises * noise_power * 10.0 ** (snr_db / 10.0)))
+        scaled_noises.append((noise * scale).astype(np.float32))
+
+    combined_noise = sum(scaled_noises)
+    noisy = speech + combined_noise
+
+    peak = float(np.max(np.abs(noisy)))
+    if peak > PEAK_CEILING:
+        shrink = PEAK_CEILING / peak
+        noisy = noisy * shrink
+        speech = speech * shrink
+
+    return noisy.astype(np.float32), speech.astype(np.float32)
+
+
 class SpeechNoiseMixtures(Dataset):
     """Pairs of (noisy, clean, noise_category) built on the fly.
 
@@ -276,26 +318,33 @@ class SpeechNoiseMixtures(Dataset):
         return np.random.default_rng([self.seed, idx]) if self.seed is not None \
             else self._shared
 
-    def describe(self, idx):
+    def describe(self, idx, n_noises=None):
         """Everything about one mixture, without loading audio twice.
 
         Returns the arrays plus the bookkeeping the frozen-mixture manifest
         needs, so nothing has to be recomputed or guessed afterwards.
         """
+        if n_noises is None:
+            n_noises = N_NOISES
         rng = self._rng_for(idx)
         row = self.speech[idx]
 
         speech = load_wav(os.path.join(DATASET_DIR, row["filename"]))
         speech, start, end = place_in_window(speech, rng)
 
-        category = self.categories[int(rng.integers(len(self.categories)))]
-        noise_path = self.noise[category][int(rng.integers(len(self.noise[category])))]
-        noise = load_wav(noise_path)
-        if len(noise) < CLIP_SAMPLES:
-            noise = np.pad(noise, (0, CLIP_SAMPLES - len(noise)))
-        elif len(noise) > CLIP_SAMPLES:
-            offset = int(rng.integers(0, len(noise) - CLIP_SAMPLES + 1))
-            noise = noise[offset:offset + CLIP_SAMPLES]
+        categories, noise_paths, noises = [], [], []
+        for _ in range(n_noises):
+            cat = self.categories[int(rng.integers(len(self.categories)))]
+            n_path = self.noise[cat][int(rng.integers(len(self.noise[cat])))]
+            n_clip = load_wav(n_path)
+            if len(n_clip) < CLIP_SAMPLES:
+                n_clip = np.pad(n_clip, (0, CLIP_SAMPLES - len(n_clip)))
+            elif len(n_clip) > CLIP_SAMPLES:
+                offset = int(rng.integers(0, len(n_clip) - CLIP_SAMPLES + 1))
+                n_clip = n_clip[offset:offset + CLIP_SAMPLES]
+            categories.append(cat)
+            noise_paths.append(n_path)
+            noises.append(n_clip)
 
         if self.low_band_indices is None:
             snr_db = draw_snr(rng)
@@ -303,21 +352,30 @@ class SpeechNoiseMixtures(Dataset):
             lo, hi = (SNR_LOW_RANGE if idx in self.low_band_indices
                       else SNR_HIGH_RANGE)
             snr_db = float(rng.uniform(lo, hi))
-        noisy, clean = mix_at_snr(speech, (start, end), noise, snr_db)
+        noisy, clean = mix_many(speech, (start, end), noises, snr_db)
+
+        weights = [1.0 / n_noises] * n_noises
+        labels = [self.category_index[c] for c in categories]
+        rel_noise_files = [os.path.relpath(p, DATASET_DIR) for p in noise_paths]
 
         return {
             "noisy": noisy,
             "clean": clean,
-            "category": category,
-            "label": self.category_index[category],
+            "category": categories[0] if n_noises == 1 else categories,
+            "categories": categories,
+            "weights": weights,
+            "label": labels[0],
+            "labels": labels,
             "snr_db": snr_db,
             "speech_file": row["filename"],
             "language": row["language"],
             "speaker_id": row["speaker_id"],
-            "noise_file": os.path.relpath(noise_path, DATASET_DIR),
+            "noise_file": rel_noise_files[0] if n_noises == 1 else rel_noise_files,
+            "noise_files": rel_noise_files,
             "speech_start": start,
             "speech_end": end,
         }
+
 
     def __getitem__(self, idx):
         m = self.describe(idx)
@@ -382,7 +440,9 @@ def self_test():
         counts, snrs, peaks = {}, [], []
         for i in range(len(ds)):
             m = ds.describe(i)
-            counts[m["category"]] = counts.get(m["category"], 0) + 1
+            cats = m["categories"] if "categories" in m else ([m["category"]] if isinstance(m["category"], str) else m["category"])
+            for c in cats:
+                counts[c] = counts.get(c, 0) + 1
             snrs.append(m["snr_db"])
             peaks.append(float(np.max(np.abs(m["noisy"]))))
             assert len(m["noisy"]) == CLIP_SAMPLES == len(m["clean"])
@@ -397,8 +457,28 @@ def self_test():
         # a seeded dataset must be byte-identical when asked twice
         again = SpeechNoiseMixtures(split, seed=0)
         assert np.array_equal(ds.describe(0)["noisy"], again.describe(0)["noisy"])
-    print("\nreproducible for a fixed seed, all windows exact, no clipping.")
+
+        # bit-identical verification: mix_many with n_noises=1 vs mix_at_snr
+        m_single = ds.describe(0, n_noises=1)
+        rng_c = np.random.default_rng([0, 0])
+        row_c = ds.speech[0]
+        sp_c = load_wav(os.path.join(DATASET_DIR, row_c["filename"]))
+        sp_c, st_c, en_c = place_in_window(sp_c, rng_c)
+        cat_c = ds.categories[int(rng_c.integers(len(ds.categories)))]
+        np_c = ds.noise[cat_c][int(rng_c.integers(len(ds.noise[cat_c])))]
+        n_c = load_wav(np_c)
+        if len(n_c) < CLIP_SAMPLES:
+            n_c = np.pad(n_c, (0, CLIP_SAMPLES - len(n_c)))
+        elif len(n_c) > CLIP_SAMPLES:
+            off_c = int(rng_c.integers(0, len(n_c) - CLIP_SAMPLES + 1))
+            n_c = n_c[off_c:off_c + CLIP_SAMPLES]
+        snr_c = draw_snr(rng_c)
+        noisy_ref, clean_ref = mix_at_snr(sp_c, (st_c, en_c), n_c, snr_c)
+        assert np.array_equal(m_single["noisy"], noisy_ref), "mix_many with N_NOISES=1 is not bit-identical to mix_at_snr!"
+        assert np.array_equal(m_single["clean"], clean_ref), "clean speech differs!"
+    print("\nreproducible for a fixed seed, all windows exact, no clipping, bit-identical check PASSED.")
 
 
 if __name__ == "__main__":
     self_test()
+
