@@ -224,7 +224,8 @@ def build_crn(**over):
         layers=over.get("lstm_layers", model_crn.LSTM_LAYERS),
         mask_max=over.get("mask_max", model_crn.MASK_MAX),
         freq_strides=over.get("freq_strides", model_crn.ENCODER_FREQ_STRIDES),
-        aux_target=over.get("aux_target", model_crn.AUX_TARGET))
+        aux_target=over.get("aux_target", model_crn.AUX_TARGET),
+        erb=over.get("erb_bands", model_crn.ERB_BANDS))
 
 
 # The registry. A new architecture is one entry here plus its model file.
@@ -263,6 +264,9 @@ def build_from_config(cfg, device):
         # head; falling back to the current default would build a 1-output
         # head and refuse to load their checkpoints.
         aux_target=cfg.get("aux_target", "category"),
+        # Runs before the ERB experiment have no such key and saw all 257
+        # bins; None rebuilds exactly that.
+        erb_bands=tuple(cfg["erb_bands"]) if cfg.get("erb_bands") else None,
         freq_strides=strides).to(device)
 
 
@@ -682,6 +686,10 @@ def main():
     ap.add_argument("--seed", type=int, default=SEED,
                     help="repeat a configuration under a different seed, to "
                          "measure how much two identical runs differ")
+    ap.add_argument("--erb", type=int, nargs=2, metavar=("LOW_BINS", "BANDS"),
+                    default=None,
+                    help="hybrid frequency resolution: keep LOW_BINS exactly, "
+                         "merge the rest into BANDS ERB bands (GTCRN: 65 64)")
     ap.add_argument("--channel-scale", type=float, default=1.0,
                     help="multiply every encoder layer's width by this; 1.5 "
                          "reproduces the capacity of run 0002")
@@ -730,6 +738,7 @@ def main():
                                      encoder_channels=channels,
                                      lstm_hidden=args.lstm_hidden,
                                      aux_target=args.aux_target,
+                                     erb_bands=tuple(args.erb) if args.erb else None,
                                      lookahead_frames=args.lookahead).to(device)
     n_params = sum(p.numel() for p in model.parameters())
 
@@ -794,6 +803,7 @@ def main():
         "encoder_channels": list(channels),
         "channel_scale": args.channel_scale,
         "encoder_freq_strides": list(model_crn.ENCODER_FREQ_STRIDES),
+        "erb_bands": list(args.erb) if args.erb else None,
         # How many frequency bands the LSTM actually sees. The single number
         # that says whether the recurrent core can resolve a harmonic comb.
         "lstm_bands": model.encoder.out_freq,
