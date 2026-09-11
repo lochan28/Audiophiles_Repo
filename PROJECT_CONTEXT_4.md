@@ -1070,13 +1070,13 @@ it is **not present in this project folder**.
   per-category evaluation numbers rather than treating it as a regression.
 - Held-out-category generalization testing is not set up, since all seven
   categories appear in all three splits (Section 7).
-- The model's inference time on the real target embedded hardware is still
-  unknown. There is now a first data point on the RTX 5060 — 0.46 ms of
-  compute per 100 ms of audio, leaving end-to-end latency at 177.0 ms — but
-  the target board is a Raspberry Pi, which has not been tested. On four x86
-  cores the two-stage system runs 8.4x faster than real time, 2.0x on one.
-  Compute is far from the constraint here, so this is unlikely to force the
-  chunk size or lookahead to change (Section 5).
+- ~~The model's inference time on the real target embedded hardware is still
+  unknown.~~ **Measured on 2026-09-11, Section 24.** A Raspberry Pi 5 runs
+  stage 1 with int8 live in real time (58 ms per 100 ms chunk, 0 underruns);
+  a Pi 4 runs the model correctly at a quarter of real time and cannot be
+  made to keep up. The two-stage system does not run in real time on either
+  board. Compute IS the constraint on the Pi, contrary to what the x86
+  numbers suggested.
 
 **Carried over, still unresolved:**
 
@@ -1931,10 +1931,11 @@ the ones that decide deployability -- measured on x86, per 3-second clip:
     + 128 K post-filter     3.8x     8.2x    16.0x
     + 505 K post-filter     2.0x     4.6x     8.4x
 
-A Pi core is several times slower than an x86 one, so the 505 K filter needs
-the four cores and int8 quantisation to have margin. The 128 K filter is kept
-beside it for exactly this reason: a third of the compute for 1.978 PESQ
-against 1.983, a trade that was irrelevant on the 5060 and decisive on a Pi.
+A Pi core turned out to be far slower than "several times" (Section 24): on a
+Pi 5 even the 128 K filter puts the two-stage system over the 100 ms deadline
+(110.8 ms with int8), and what ships live is stage 1 alone. The 128 K filter
+is kept for the day a faster board or a smaller stage 1 makes it affordable:
+a third of the compute for 1.978 PESQ against 1.983.
 
 ### Where it lives, and why the weights are named the way they are
 
@@ -1990,6 +1991,103 @@ two bottlenecks want opposite fixes.
 
 That 669 MB/s figure is what rules out microcontroller-class parts: an ESP32-S3
 is roughly 20-40x short on compute and 10-16x short on PSRAM bandwidth, which
-is a redesign rather than a port. A Raspberry Pi 4 or an Intel N100 mini PC is
-the sensible target; a Pi Zero 2 W would need full int8 quantisation first and
-would still have no margin.
+is a redesign rather than a port. Measured (Section 24): a **Raspberry Pi 5**
+is the target -- a Pi 4 runs the model correctly but at 0.26x real time, and
+no fallback on the list closes that gap. A Pi Zero 2 W is out of the question.
+
+## 24. Deployment on Raspberry Pi: measured, not estimated
+
+One day with the boards, 2026-09-11. Same SD card, venv, torch 2.14.0+cpu and
+scripts moved between a Pi 4 (2 GB) and a Pi 5 (8 GB), so every difference is
+the silicon. Full numbers and the enhanced WAVs are in
+`deploy/pi_results/RESULTS.md`; the kit that produced them is `deploy/`.
+
+### Correctness: settled on both
+
+`selfcheck.py` drift **-0.000 dB** from the x86 reference on both boards, and
+the streaming path matches the whole-clip path to **1.1e-07**. Three clips
+processed end-to-end on the Pi 4 and scored on x86: every one of SI-SNR, PESQ
+and STOI up on every clip, and `testing_000` matching the x86 live result to
+the hundredth (6.69 dB). The model loads in 1.8 GB with ~500 MB peak. RAM was
+never the problem.
+
+### Speed: the estimate was wrong by 3x
+
+Streaming, 100 ms chunks, 4 threads, against a 100 ms deadline:
+
+                        Pi 4        Pi 5
+    fp32 two-stage      424 ms      145.5 ms    MISSED
+    fp32 stage 1        290 ms      100.4 ms    MISSED (worst 126)
+    int8 two-stage      308 ms      110.8 ms    MISSED
+    int8 stage 1        191 ms       59.7 ms    ok (worst 85.4)
+
+The pre-day figure for a Pi 4 was ~130 ms, from scaling the x86 four-thread
+number by a clock ratio. Torch's fp32 kernels on Cortex-A72 are far weaker
+than that, and the Pi 5's A76 is 2.8-3.2x faster per configuration. Thread
+scaling is poor on both (Pi 4: 815 / 549 / 430 ms at 1 / 2 / 4), as the LSTM
+predicted.
+
+**int8 helps on ARM where it did nothing on x86.** Dynamic quantisation of the
+LSTM through qnnpack bought 1.45x on the Pi 4 and 1.7x on the Pi 5, at a max
+error of 1.8e-3 on rms 0.063 -- inaudible, consistent with the x86 quality
+finding. On the Pi 5 that is the difference between missing the deadline and
+real time. Static int8 remains closed (Section 22): the 7e6 dynamic range of
+the input magnitude destroys the mask.
+
+### What runs live
+
+`deploy/live_mic.py --int8 --no-postfilter` on the Pi 5, USB microphone in,
+Bluetooth headset out via PipeWire at native 16 kHz: **58 ms median, 60 ms
+worst, 0 dropped, 0 underruns**, steady. ENTER flips between the raw
+microphone and the enhanced stream with no gap; the model always runs and both
+buffers carry the same audio in the same order, so the only thing that changes
+is the model. `deploy/backlog_demo.py` makes the Pi 4's failure visible rather
+than argued: 26% of real time, backlog growing 0.75 s per second, against
+BACKLOG 0.0 s held flat on the Pi 5 by the identical script.
+
+**The honest deployment claim:** bit-exact on both boards; live real-time
+speech enhancement on a Raspberry Pi 5 with stage 1 and int8; the post-filter's
+0.05 PESQ is the price of real time on this board. Not "runs on a Pi".
+
+### The streaming loop (`scripts/stream.py`)
+
+`demo_core.StreamSession` re-processes 2.56 s of context per chunk -- exact,
+stateless, and about 26x real time, which is fine on a laptop and hopeless on
+a Pi. `stream.py` remembers instead. Three pasts, three treatments: the LSTM
+state is carried and every frame fed once (exact); the encoder and decoder are
+convolutions with ~20 frames of reach, recomputed over a 24-frame window; the
+post-filter keeps **per-layer ring buffers** of 2*dilation frames each rather
+than 130 raw frames -- that one change was worth 3x on the 128 K filter and
+5.7x on the 505 K. Verified to 1.19e-07 against the offline path, 8.4e-08 at
+chunk seams.
+
+One trap worth recording: `torch.stft(center=True)` reflect-pads the start of
+a clip and a live stream has nothing to reflect, so frames 0-1 differ and the
+LSTM carries that forward for ever. It reads exactly like a state bug --
+uniform error, unmoved by context length -- and cost an hour. The self-test
+starts with a silent lead-in on purpose.
+
+### Hardware facts, learned the expensive way and now handled in code
+
+- USB headsets refuse 16 kHz outright and speak only 48; resample, or go
+  through PipeWire, which resamples. Bluetooth audio exists only inside
+  PipeWire; `pipewire-alsa` is the bridge that lets PortAudio see it.
+- PortAudio's "default" device flipped between HDMI and USB across two runs
+  on the same board; the scripts prefer a USB device by name.
+- HDMI rejects mono; everything goes out as stereo.
+- The Pi 5 with no cooler reaches its 80 C soft limit in about a minute of
+  continuous inference (`throttled=0xe0000`), after which every number drifts
+  toward the Pi 4's. Fit the active cooler for any demo over a minute.
+- Raspberry Pi OS marks the system Python externally managed (PEP 668); a
+  venv sidesteps it. `pesq` has no aarch64 wheel; `selfcheck.py` gates GO on
+  SI-SNR for that reason.
+
+### What would change the Pi 4 answer
+
+Two things, both unbuilt. An incremental encoder/decoder (per-layer ring
+buffers, the post-filter trick) removes the 3.4x redundant conv work and was
+estimated to land at the deadline with no headroom. Better: the GTCRN-style
+hybrid frequency resolution (full-resolution bins below ~2 kHz, ERB bands
+above) halves the LSTM input dimension, which is the actual bottleneck, at a
+measured quality cost of zero in the literature. That is a retrain, and every
+per-bin diagnostic in this project would need re-deriving first.

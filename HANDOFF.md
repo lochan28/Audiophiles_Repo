@@ -108,10 +108,12 @@ Inside the 200-250 ms budget. It is **past**
 ITU-T G.114's 150 ms comfort limit, which earlier versions of this project
 claimed; that claim no longer holds and was traded deliberately for the
 lookahead gain in §7. The GPU idles 99.4% of the time, so there is large
-headroom for a slower embedded board. Target hardware is a **Raspberry Pi**
-(four cores, no GPU), which has not been tested. On four x86 cores the
-two-stage system runs 8.4x faster than real time and 2.0x on one, so the
-four-core figure is the one that has to survive the port.
+headroom for a slower embedded board. Target hardware is a **Raspberry Pi 5**
+-- measured, 2026-09-11, PROJECT_CONTEXT_4.md Section 24. Stage 1 with int8
+runs live in real time on a Pi 5 (58 ms per 100 ms chunk, 0 underruns); the
+two-stage system does not, and a Pi 4 runs everything correctly at a quarter
+of real time. The x86 figures (8.4x on four cores) turned out to say almost
+nothing about ARM.
 
 ## 3. The acceptance rule — read before proposing any change
 
@@ -464,6 +466,14 @@ Section 9 explains why, and the reason generalises.
 accuracy against 0.143 chance) but does not help: run 0008 with it off matched
 run 0005 with it on. It stays because it is free and deleted at deployment.
 
+**Static int8 quantisation.** The input magnitude spectrogram spans 7.3e6:1
+and int8 activations have 256 levels; everything quiet collapses to zero and
+the mask error is 1.0 on a 0-1 quantity. ConvTranspose2d also has no
+per-channel weight observer. Not a calibration problem. Dynamic int8 on the
+LSTM is fine and is used.
+
+**Estimating ARM speed from x86.** Off by 3x for a Pi 4. Measure on the board.
+
 ---
 
 ## 9. What is actually wrong with the model now
@@ -733,12 +743,18 @@ that matters — it generalises rather than being selection luck.
 5. **Wire `scripts/pesq_labels.py` into `evaluate.py` and `rescore_runs.py`.**
    It scores PESQ across worker processes, 5.7x faster than serial, and is
    already on master. Small, safe, and it speeds up every future measurement.
-6. **Quantise to int8 for the embedded board.** Measured: the two-stage model
-   already runs 6.3x faster than real time on ONE CPU core, so no GPU is needed
-   to deploy. Dynamic int8 on the LSTM alone gives 1.28x; full int8 through
-   ONNX Runtime should give 3-4x and bring memory traffic under a small board's
-   bus limit. A Pi 4 or an N100 mini PC is the sensible target; a Pi Zero 2 W
-   needs the quantisation first and would have no margin.
+6. ~~**Quantise to int8 for the embedded board.**~~ Done and measured
+   (Section 24). Dynamic int8 on the LSTM is free in quality and buys 1.45-1.7x
+   on ARM -- nothing on x86 -- and on a Pi 5 it is what makes stage 1 real time.
+   Static int8 is **closed**: the input magnitude spans a 7e6 dynamic range and
+   256 levels destroy the mask (Section 22). "Full int8 through ONNX should give
+   3-4x" was a guess and is withdrawn. The Pi 5 is the target; a Pi 4 is
+   measured too slow; a Pi Zero 2 W is out of the question.
+7. **Make the Pi 4 real-time, if it matters.** Two unbuilt routes, in order of
+   promise: the GTCRN-style hybrid frequency resolution (full bins below ~2 kHz,
+   ERB bands above), which halves the LSTM input and is the principled fix; or
+   an incremental encoder/decoder with per-layer ring buffers, estimated to land
+   at the deadline with no headroom.
 
 ### One experiment recorded as inconclusive, not a clean negative
 
