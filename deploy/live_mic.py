@@ -98,9 +98,10 @@ class Engine:
 
     def __init__(self, model, post, device, bypass=False):
         self.streamer = st.Streamer(model, post, device)
-        self.bypass = bypass
+        self.raw = bypass            # what the listener hears right now
         self.inq = queue.Queue(maxsize=QUEUE_CHUNKS)
-        self.outbuf = np.zeros(0, dtype=np.float32)
+        self.outbuf = np.zeros(0, dtype=np.float32)   # enhanced
+        self.rawbuf = np.zeros(0, dtype=np.float32)   # the same audio, untouched
         self.outlock = threading.Lock()
         self.stop = threading.Event()
         self.primed = False        # has the first real output arrived?
@@ -125,11 +126,16 @@ class Engine:
                 chunk = self.inq.get(timeout=0.2)
             except queue.Empty:
                 continue
+            # The model ALWAYS runs, whichever you are listening to. That is
+            # what makes the A/B switch seamless: both buffers carry the same
+            # audio in the same order, so flipping between them mid-sentence
+            # does not jump in time or restart the model's memory.
             t0 = time.perf_counter()
-            out = (chunk if self.bypass else self.streamer.push(chunk))
+            out = self.streamer.push(chunk)
             self.times.append((time.perf_counter() - t0) * 1000.0)
-            if len(out):
-                with self.outlock:
+            with self.outlock:
+                self.rawbuf = np.concatenate([self.rawbuf, chunk])
+                if len(out):
                     self.outbuf = np.concatenate([self.outbuf, out])
 
     def feed(self, chunk):
@@ -154,14 +160,25 @@ class Engine:
                 if len(self.outbuf) < n:
                     return np.zeros(n, dtype=np.float32)   # pre-roll
                 self.primed = True
-            if len(self.outbuf) >= n:
-                out, self.outbuf = self.outbuf[:n], self.outbuf[n:]
-                return out
+                # Line the raw buffer up with the enhanced one. The model
+                # holds ~2000 samples back, so by the time the first
+                # enhanced chunk exists the raw buffer is that far ahead.
+                # Trim the raw buffer to the same length from its END so
+                # both buffers now start at the same input sample.
+                lag = len(self.rawbuf) - len(self.outbuf)
+                if lag > 0:
+                    self.rawbuf = self.rawbuf[lag:]
+            have = min(len(self.outbuf), len(self.rawbuf))
+            if have >= n:
+                enh, self.outbuf = self.outbuf[:n], self.outbuf[n:]
+                raw, self.rawbuf = self.rawbuf[:n], self.rawbuf[n:]
+                return raw if self.raw else enh
             out = np.zeros(n, dtype=np.float32)
-            have = len(self.outbuf)
             if have:
-                out[:have] = self.outbuf
-                self.outbuf = self.outbuf[:0]
+                src = self.rawbuf if self.raw else self.outbuf
+                out[:have] = src[:have]
+                self.outbuf = self.outbuf[have:]
+                self.rawbuf = self.rawbuf[have:]
         self.starved += 1
         return out
 
@@ -169,6 +186,7 @@ class Engine:
         """Everything the worker has finished, however much that is."""
         with self.outlock:
             out, self.outbuf = self.outbuf, np.zeros(0, dtype=np.float32)
+            self.rawbuf = self.rawbuf[:0]
         return out
 
     def close(self):
@@ -234,15 +252,64 @@ def _sounddevice():
 def run_live(engine, in_dev, out_dev):
     sd = _sounddevice()
 
+    # Pick USB devices by name when none is given. PortAudio's "default"
+    # flipped between HDMI and the headset across two runs on the same Pi.
+    devs = list(enumerate(sd.query_devices()))
+    usb = [i for i, d in devs if "USB" in d["name"].upper()]
+    if in_dev is None:
+        c = [i for i in usb if devs[i][1]["max_input_channels"] > 0]
+        in_dev = c[0] if c else sd.default.device[0]
+    if out_dev is None:
+        c = [i for i in usb if devs[i][1]["max_output_channels"] > 0]
+        out_dev = c[0] if c else sd.default.device[1]
+
+    # USB headsets speak 48 kHz and refuse 16 outright. Run the card at its
+    # own rate and convert on the way through: average every k samples in,
+    # repeat each sample k times out. k is 3 for 48 kHz.
+    # Ask for 16 kHz first. A sound server (PipeWire, via the "default" or
+    # "pipewire" device) resamples for us and accepts it; a raw USB card
+    # usually refuses and only speaks 48 kHz, in which case we run at its
+    # rate and convert on the way through.
+    try:
+        sd.check_input_settings(device=in_dev, samplerate=SR, channels=1)
+        sd.check_output_settings(device=out_dev, samplerate=SR, channels=2)
+        rate, k = SR, 1
+    except Exception:
+        rate = int(sd.query_devices(out_dev, "output")["default_samplerate"])
+        k = rate // SR
+        if rate != k * SR:
+            raise SystemExit(f"output device runs at {rate} Hz, which is not "
+                             f"a multiple of {SR}; pick another with --out")
+    block = CHUNK * k
+
     def callback(indata, outdata, frames, t, status):
         if status:
             print(f"  [audio] {status}", file=sys.stderr)
-        engine.feed(indata[:, 0])
-        outdata[:, 0] = engine.take(frames)
+        mono = indata[:, 0]
+        engine.feed(mono[:len(mono) // k * k].reshape(-1, k).mean(axis=1)
+                    .astype(np.float32))
+        o = np.repeat(engine.take(frames // k), k)
+        for ch in range(outdata.shape[1]):
+            outdata[:, ch] = o
 
-    print("listening -- ctrl-c to stop")
-    with sd.Stream(samplerate=SR, blocksize=CHUNK, dtype="float32",
-                   channels=1, device=(in_dev, out_dev), callback=callback):
+    print(f"devices     in [{in_dev}] {devs[in_dev][1]['name']}")
+    print(f"            out [{out_dev}] {devs[out_dev][1]['name']}, {rate} Hz")
+    def label():
+        return "RAW microphone" if engine.raw else "ENHANCED"
+
+    # Enter flips between the two. A thread blocks on stdin so the audio
+    # callback never waits on the keyboard.
+    def keys():
+        for _ in sys.stdin:
+            engine.raw = not engine.raw
+            print(f"  >>> now hearing: {label()}", flush=True)
+    threading.Thread(target=keys, daemon=True).start()
+
+    print(f"listening -- hearing: {label()}.  "
+          f"Press ENTER to switch, ctrl-c to stop")
+    with sd.Stream(samplerate=rate, blocksize=block, dtype="float32",
+                   channels=(1, 2), device=(in_dev, out_dev),
+                   callback=callback):
         last = time.time()
         try:
             while True:
@@ -260,10 +327,14 @@ def main():
     ap.add_argument("--in", dest="in_dev", type=int, default=None)
     ap.add_argument("--out", dest="out_dev", type=int, default=None)
     ap.add_argument("--bypass", action="store_true",
-                    help="pass the microphone through untouched, for A/B")
+                    help="start on the raw microphone (ENTER switches either way)")
     ap.add_argument("--file", nargs=2, metavar=("IN", "OUT"),
                     help="process a WAV instead of using the sound card")
     ap.add_argument("--threads", type=int, default=THREADS)
+    ap.add_argument("--no-postfilter", action="store_true",
+                    help="stage 1 alone: ~1.4x faster, ~0.05 PESQ less")
+    ap.add_argument("--int8", action="store_true",
+                    help="dynamic int8 on the LSTM; 1.45-1.7x on ARM, free")
     args = ap.parse_args()
 
     if args.list:
@@ -273,12 +344,20 @@ def main():
     torch.set_num_threads(args.threads)
     device = torch.device("cpu")
     model, post, ck, epoch = load_models(device)
-    print(f"model       {ck} epoch {epoch}, "
+    if args.no_postfilter:
+        post = None
+    if args.int8:
+        # ARM has real int8 kernels (qnnpack). Measured on a Pi 5: this is
+        # the difference between 100 ms and 60 ms per chunk for stage 1,
+        # i.e. between missing the deadline and real time. Quality cost is
+        # 1.8e-3 max error on rms 0.063 -- inaudible.
+        torch.backends.quantized.engine = "qnnpack"
+        model = torch.quantization.quantize_dynamic(
+            model, {torch.nn.LSTM, torch.nn.Linear}, dtype=torch.qint8)
+    print(f"model       {ck} epoch {epoch}{', int8' if args.int8 else ''}, "
           f"post-filter {'none' if post is None else os.path.basename(POSTFILTER_WEIGHTS)}")
     print(f"threads     {args.threads}   chunk {CHUNK / 16:.0f} ms   "
           f"added latency ~{CHUNK / 16 + 88:.0f} ms")
-    if args.bypass:
-        print("bypass      ON -- the model is not running")
 
     engine = Engine(model, post, device, bypass=args.bypass)
     engine.start()
