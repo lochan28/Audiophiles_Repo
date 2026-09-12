@@ -750,11 +750,26 @@ that matters — it generalises rather than being selection luck.
    256 levels destroy the mask (Section 22). "Full int8 through ONNX should give
    3-4x" was a guess and is withdrawn. The Pi 5 is the target; a Pi 4 is
    measured too slow; a Pi Zero 2 W is out of the question.
-7. **Make the Pi 4 real-time, if it matters.** Two unbuilt routes, in order of
-   promise: the GTCRN-style hybrid frequency resolution (full bins below ~2 kHz,
-   ERB bands above), which halves the LSTM input and is the principled fix; or
-   an incremental encoder/decoder with per-layer ring buffers, estimated to land
-   at the deadline with no headroom.
+7. **The ERB hybrid is built, measured, and waiting for a board.** Branch
+   `erb-hybrid` (tag `pre-erb` marks where it forked): full resolution below
+   2 kHz, 64 ERB bands above, LSTM input 1728 -> 960, parameters 9.26 M ->
+   7.31 M. `scripts/erb_ceiling.py` showed the representation costs 0.001
+   PESQ at the ideal-mask ceiling; run 0036 showed the trained model pays
+   anyway -- PESQ holds (-0.8 sigma) but STOI -5 sigma and SI-SNR -3 sigma --
+   because the change also halves the LSTM's bands from 9 to 5, and run 0013
+   already showed that matters. **Rejected as a free change.** Undecided as a
+   trade: it buys 1.3-1.4x on x86 stage 1, more on ARM where the LSTM
+   dominates. The ten-minute test that settles it, on a Pi 5:
+   `bench_configs.py` pointed at run 0036. If the **two-stage** system drops
+   under 100 ms (it sits at 110.8 ms int8 with run 0026, 10% over), retrain the
+   post-filter on 0036's output with `postfilter_test.py` and score the pair --
+   the post-filter's +0.05 PESQ is ten times what 0036 gave up, so the pair
+   could pass the acceptance rule on net. If it does not, delete the branch.
+   Do not estimate the ARM number from the x86 one; that was off by 3x once.
+8. **Make the Pi 4 real-time, if it still matters.** The remaining unbuilt
+   route is an incremental encoder/decoder with per-layer ring buffers,
+   estimated to land at the deadline with no headroom. Item 7's answer comes
+   first; if the ERB model makes the Pi 5 two-stage, the Pi 4 stops mattering.
 
 ### One experiment recorded as inconclusive, not a clean negative
 
