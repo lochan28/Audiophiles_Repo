@@ -579,6 +579,106 @@ Verified after writing: every file is exactly 48000 samples, requested and
 measured SNR agree to 0.0000 dB across all 268, no mixture crosses a split, and
 validation/testing speakers are disjoint.
 
+### Incoming: a human-annotated noise round from MAD — NOT arrived yet
+
+**Status: sent out 2026-09-13, nothing has come back. No merge script exists.
+When the folders arrive, write it to the spec below.** Until then there is
+nothing to do here.
+
+**What went out.** Three people — Rashmit, Vaibhav, Lochan — each got a zip
+(`C:\Users\k.lochan\Downloads\noise_annotator_<person>.zip`) containing the
+Noise Annotator web tool (source at `C:\noise_annotator\`, its own README and
+AGENTS.md describe it) with 42 raw files already in its `dataset/` folder:
+30 training / 6 validation / 6 testing. The raw files are from the Kaggle
+**MAD** dataset (Kim, Yoon & Jung, *Sci. Data* 2024; 7,466 clips of 2–10 s,
+16 kHz mono, sliced from military YouTube videos, 7 classes: communication,
+gunshot, footsteps, shelling, vehicle, helicopter, fighter). They were dealt by
+`C:\mad_splits\make_mad_splits.py` with these guarantees, all verified on the
+written output: no file dealt twice to anyone; no two files from the same
+YouTube video anywhere in the deal (126 files, 126 videos); training files
+from Kaggle's training set only, validation and testing from Kaggle's test
+set only; nothing under 3 s. File names are `<segment>_<n>.wav` and carry no
+class information — the annotators label blind.
+
+**The answer key is `C:\mad_splits\assignment.csv`** (person, split, file,
+Kaggle path, MAD label and class name, duration, YouTube title and URL). It is
+not in any zip. The full 1.2 GB Kaggle download is at `C:\mad_splits\kaggle\`;
+a second round is one run of the script with a new `SEED`.
+
+**What comes back from each person: a `classified/` folder.** Its format is
+deliberately this project's format, so nothing needs converting:
+
+```
+classified/
+├── training/<category>/<category>_001.wav, _002.wav ...
+├── validation/<category>/...
+├── testing/<category>/...
+└── manifest.csv    clip, split, category, source, start, end, annotator,
+                    created, level_dbfs   -- one row per clip
+```
+
+Every clip is exactly 48000 samples, 16 kHz, mono, PCM_16 — the annotator's
+server enforces this and refuses anything else. Categories are our seven
+(`categories.json` in the tool is our `noise_classes.txt` order), normalised
+to `lowercase_with_underscores`; an annotator *can* add a new category and it
+is appended to their list. Windows may overlap, so one 10 s raw file can yield
+several clips; expect anywhere from ~50 to ~300 clips in total across the three
+people, not 126. `source` is the raw file name (`232_7.wav`), which joins to
+`assignment.csv` → `file`.
+
+**Two things that make a hand-merge wrong.** (1) Each person's numbering
+restarts at 001, so Rashmit's `helicopter_003.wav` and Vaibhav's are different
+clips with the same name. (2) The split folders are named `training/` etc.,
+ours are `noise_train/` etc.
+
+**The script to write: `scripts/merge_annotated_noise.py`.** Same shape as
+`add_noise_class.py` (dry run by default, `--apply` to write, copies never
+moves). Drop folder `incoming_noise/<person>/classified/`. It must:
+
+1. Read each person's `manifest.csv`; check every listed file exists and is
+   exactly 48000 samples / 16 kHz / mono / PCM_16 — refuse the whole run on
+   any miss, the way the rest of the pipeline refuses rather than pads.
+2. Content-hash every incoming clip against every other incoming clip **and**
+   against everything already in `dataset/noise_data/`. Overlapping windows
+   from the same raw file are fine (different bytes); byte-identical clips are
+   not. Expect zero; report the count either way.
+3. Map `training→noise_train`, `validation→noise_validation`,
+   `testing→noise_testing`.
+4. Apply the standing rule: a category is installed only if, *after* the merge,
+   it exists in all three splits. Our seven already do. A category one
+   annotator invented and only put in training is held back and listed, not
+   silently dropped and not silently installed.
+5. Write into `dataset/noise_data/noise_<split>/<category>/` numbered from the
+   **next free index in that folder**. Existing files are never renumbered —
+   the frozen manifests reference them by name.
+6. Append new categories to `dataset/noise_classes.txt` at the bottom only, as
+   `add_noise_class.py` does. Never reorder.
+7. Write `dataset/noise_provenance.csv` (append if present): new filename,
+   split, category, annotator, raw source file, start, end, and — joined from
+   `assignment.csv` — the MAD label, class name and YouTube URL. This is what
+   makes a clip traceable back to a video later.
+8. Rebuild the manifests (`build_balanced_manifests.py`). Remember the balance
+   rule: targets are held exactly and surplus is ignored, so more raw material
+   in a category does not automatically mean more of it is used — check the
+   targets after and decide deliberately.
+9. **Do not regenerate the 268 frozen evaluation mixtures.** They contain none
+   of the new noise and stay valid for before/after comparison. A second
+   frozen set is a separate, deliberate step (see `add_noise_class.py`).
+
+**A second, smaller script, or a flag on the first: score the annotators.**
+Join each `manifest.csv` row's `source` to `assignment.csv` and tabulate our
+category against MAD's class per person. The mapping is loose and must be
+stated in the output, not assumed: helicopter↔helicopter, gunshot↔assault_rifle,
+vehicle↔engine, shelling↔heavy_artillery *or* mortar, fighter has no clean
+home (engine at best), footsteps→ambient or discarded, communication (people
+talking) should have been discarded. Also report per person: files discarded,
+clips per file, clips flagged `quiet` (level under −45 dBFS — the annotator
+flags these but still exports them; listen before installing). There is no
+inter-annotator agreement to compute — the three sets are disjoint by design.
+
+**Before any of this: play a few clips from each person.** The format check
+proves the container, not the content.
+
 ---
 
 ## 11. The code
@@ -830,6 +930,15 @@ view for the LSTM, more compression in either direction, deep filtering,
 multi-resolution spectral loss, the local-SNR auxiliary head, and MetricGAN.
 Section 8 and PROJECT_CONTEXT_4.md Section 22 carry the measurement that killed
 each.
+
+### Waiting on: the human-annotated noise round
+
+Three people are annotating 42 MAD files each with the Noise Annotator tool
+(§10, "Incoming"). When their `classified/` folders come back, the job is to
+write `scripts/merge_annotated_noise.py` to the spec in §10 — renumber into
+`noise_data/`, provenance CSV, category-in-all-splits rule, frozen sets
+untouched — and score them against `C:\mad_splits\assignment.csv`. Nothing to
+do until the folders arrive; do not pre-build the script.
 
 ### The honest position on the targets
 
