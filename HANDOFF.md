@@ -588,17 +588,24 @@ nothing to do here.
 **What went out.** Three people — Rashmit, Vaibhav, Lochan — each got a zip
 (`C:\Users\k.lochan\Downloads\noise_annotator_<person>.zip`) containing the
 Noise Annotator web tool (source at `C:\noise_annotator\`, its own README and
-AGENTS.md describe it) with 42 raw files already in its `dataset/` folder:
-30 training / 6 validation / 6 testing. The raw files are from the Kaggle
-**MAD** dataset (Kim, Yoon & Jung, *Sci. Data* 2024; 7,466 clips of 2–10 s,
-16 kHz mono, sliced from military YouTube videos, 7 classes: communication,
-gunshot, footsteps, shelling, vehicle, helicopter, fighter). They were dealt by
-`C:\mad_splits\make_mad_splits.py` with these guarantees, all verified on the
-written output: no file dealt twice to anyone; no two files from the same
-YouTube video anywhere in the deal (126 files, 126 videos); training files
-from Kaggle's training set only, validation and testing from Kaggle's test
-set only; nothing under 3 s. File names are `<segment>_<n>.wav` and carry no
-class information — the annotators label blind.
+AGENTS.md describe it) with raw files already in its `dataset/` folder.
+**Rashmit and Vaibhav: 500 training / 150 validation / 150 testing each.
+Lochan: 30 / 6 / 6** (the smaller round-1 hand, kept unchanged because it
+was already in use). 1,642 raw files in total. The raw files are from the
+Kaggle **MAD** dataset (Kim, Yoon & Jung, *Sci. Data* 2024; 7,466 clips of
+2–10 s, 16 kHz mono, sliced from military YouTube videos, 7 classes:
+communication, gunshot, footsteps, shelling, vehicle, helicopter, fighter).
+They were dealt by `C:\mad_splits\make_mad_splits.py` with these guarantees,
+all verified on the written output: no file dealt twice to anyone, by path
+or by bytes; **no YouTube video feeds more than one split** — the training,
+validation and testing videos are disjoint sets across all three people, so
+a slice of a recording used for evaluation was never trained on; training
+files from Kaggle's training set only, validation and testing from Kaggle's
+test set only; nothing under 3 s; clips spread over as many videos as
+possible (each 500-hand spans 330+ videos). Rashmit and Vaibhav share videos
+but never files. File names are `<segment>_<n>.wav` and carry no class
+information — the annotators label blind. `C:\mad_splits\README.md` has the
+round history.
 
 **The answer key is `C:\mad_splits\assignment.csv`** (person, split, file,
 Kaggle path, MAD label and class name, duration, YouTube title and URL). It is
@@ -622,8 +629,8 @@ server enforces this and refuses anything else. Categories are our seven
 (`categories.json` in the tool is our `noise_classes.txt` order), normalised
 to `lowercase_with_underscores`; an annotator *can* add a new category and it
 is appended to their list. Windows may overlap, so one 10 s raw file can yield
-several clips; expect anywhere from ~50 to ~300 clips in total across the three
-people, not 126. `source` is the raw file name (`232_7.wav`), which joins to
+several clips; expect on the order of 1,500–4,000 clips in total across the
+three people, most of them from Rashmit and Vaibhav, not 1,642. `source` is the raw file name (`232_7.wav`), which joins to
 `assignment.csv` → `file`.
 
 **Two things that make a hand-merge wrong.** (1) Each person's numbering
@@ -933,8 +940,8 @@ each.
 
 ### Waiting on: the human-annotated noise round
 
-Three people are annotating 42 MAD files each with the Noise Annotator tool
-(§10, "Incoming"). When their `classified/` folders come back, the job is to
+Three people are annotating MAD files with the Noise Annotator tool — 800
+each for Rashmit and Vaibhav, 42 for Lochan (§10, "Incoming"). When their `classified/` folders come back, the job is to
 write `scripts/merge_annotated_noise.py` to the spec in §10 — renumber into
 `noise_data/`, provenance CSV, category-in-all-splits rule, frozen sets
 untouched — and score them against `C:\mad_splits\assignment.csv`. Nothing to
