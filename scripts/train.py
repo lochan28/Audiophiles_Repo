@@ -700,20 +700,34 @@ def main():
                          "the step count held fixed")
     ap.add_argument("--limit-batches", type=int, default=None,
                     help="stop each epoch after N batches (smoke testing)")
+    ap.add_argument("--noise-root", default=None, metavar="DIR",
+                    help="read noise from DIR instead of dataset/ (e.g. "
+                         "dataset_v2) -- speech clips still come from "
+                         "dataset/ either way, only the noise set moves")
+    ap.add_argument("--multi-noise", action="store_true",
+                    help="use the v2 mixing rules: 1-4 noise clips summed "
+                         "per mixture (weighted, see NOISE_COUNT_WEIGHTS in "
+                         "mixing.py) instead of exactly one")
+    ap.add_argument("--eval-mixtures-root", default=None, metavar="DIR",
+                    help="read the frozen validation/testing mixtures from "
+                         "DIR instead of generated_test_mixtures/")
     args = ap.parse_args()
 
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    train_set = SpeechNoiseMixtures("train")            # fresh noise each epoch
+    if args.noise_root:
+        mixing.NOISE_DIR = os.path.abspath(args.noise_root)
+
+    train_set = SpeechNoiseMixtures("train", multi_noise=args.multi_noise)
     if args.data_fraction < 1.0:
         keep = max(1, int(len(train_set.speech) * args.data_fraction))
         # take an evenly spaced slice, not the first N: the manifest is sorted
         # by language, so the head would be Assamese and English only
         step = len(train_set.speech) / keep
         train_set.speech = [train_set.speech[int(i * step)] for i in range(keep)]
-    val_set = FrozenMixtures("validation")              # fixed, comparable
+    val_set = FrozenMixtures("validation", root=args.eval_mixtures_root)  # fixed, comparable
     classes = read_noise_classes()
 
     from torch.utils.data import RandomSampler

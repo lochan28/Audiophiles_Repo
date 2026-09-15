@@ -52,6 +52,14 @@ from torch.utils.data import Dataset
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATASET_DIR = os.path.join(PROJECT_ROOT, "dataset")
 
+# Where noise is read from. Separate from DATASET_DIR because the v2 dataset
+# (multi-noise mixtures, PROJECT_CONTEXT_4.md noise-expansion plan) replaces
+# only the noise set -- speech clips, and their manifests, are reused from
+# the original dataset/ unchanged. Training/eval scripts flip this to
+# dataset_v2/noise_data's parent to switch noise sets; DATASET_DIR itself
+# never needs to move.
+NOISE_DIR = DATASET_DIR
+
 SPLITS = ["train", "validation", "testing"]
 
 # The frozen evaluation sets. The archived one was built under the old flat
@@ -117,10 +125,92 @@ def low_band_selection(n, fraction=SNR_LOW_FRACTION):
 MIN_SPEECH_SECONDS = 1.0        # shorter clean clips are skipped entirely
 MIN_SPEECH_SAMPLES = int(TARGET_SR * MIN_SPEECH_SECONDS)
 
-N_NOISES = 1                    # number of noise clips mixed into each training example
+N_NOISES = 1                    # legacy path: every mixture uses exactly one
+                                 # noise clip. Untouched by the v2 multi-noise
+                                 # work below -- SpeechNoiseMixtures(...,
+                                 # multi_noise=False), the default, always
+                                 # goes through this constant and is
+                                 # bit-identical to every run before it.
 
 PEAK_CEILING = 0.99             # mixtures are rescaled below this if they clip
 EPS = 1e-10
+
+# --- v2: multi-noise mixtures (opt-in, multi_noise=True only) --------------
+#
+# TUNABLE. How many noise clips get summed into one mixture, and how often
+# each count occurs. Values are relative weights, not required to sum to 1
+# (normalised automatically) -- raise one to make that count more common.
+# 1 is kept in so plain single-noise conditions still appear, just less
+# often than they did when that was the only mode.
+NOISE_COUNT_WEIGHTS = {1: 0.15, 2: 0.34, 3: 0.30, 4: 0.21}
+MAX_NOISES = max(NOISE_COUNT_WEIGHTS)
+
+# TUNABLE. Thematic groups used only to steer which category "anchors" a
+# mixture (its first ingredient) -- every noise still keeps its own
+# individual category label for training, this does not merge them. Raise a
+# group's weight to make that flavour the anchor of more mixtures. The
+# burst figure (40%) came from a direct instruction; engine/ambient are a
+# placeholder split of the remainder and worth revisiting before a real
+# training run.
+NOISE_GROUPS = {
+    "burst":   ["assault_rifle", "mortar", "heavy_artillery"],
+    "engine":  ["engine", "helicopter", "rocket"],
+    "ambient": ["ambient"],
+}
+GROUP_WEIGHTS = {"burst": 0.40, "engine": 0.35, "ambient": 0.25}  # placeholder, confirm before training
+
+# TUNABLE. Categories allowed to appear more than once in the same mixture
+# (e.g. two separate assault-rifle bursts), and the cap on how many times.
+# Every category not listed here may appear at most once per mixture.
+REPEATABLE_CATEGORIES = {"assault_rifle", "mortar", "heavy_artillery"}
+MAX_REPEATS_PER_CATEGORY = 2
+
+
+def sample_noise_count(rng):
+    """How many noise clips go into one v2 mixture, drawn from
+    NOISE_COUNT_WEIGHTS."""
+    counts = list(NOISE_COUNT_WEIGHTS)
+    weights = np.array([NOISE_COUNT_WEIGHTS[c] for c in counts], dtype=np.float64)
+    weights = weights / weights.sum()
+    return int(rng.choice(counts, p=weights))
+
+
+def pick_categories(rng, available, n):
+    """n category names for one v2 mixture.
+
+    The first slot is anchored to a group chosen by GROUP_WEIGHTS (skipping
+    any group with nothing available in this split). The rest are drawn
+    without replacement from every available category, except
+    REPEATABLE_CATEGORIES may reappear up to MAX_REPEATS_PER_CATEGORY times.
+    Falls back to allowing any repeat only if the split is too small to fill
+    n distinct slots otherwise, rather than crashing a training run over it.
+    """
+    available = list(available)
+    groups = [g for g, cats in NOISE_GROUPS.items()
+              if any(c in available for c in cats)]
+    if groups:
+        gw = np.array([GROUP_WEIGHTS.get(g, 0.0) for g in groups], dtype=np.float64)
+        if gw.sum() <= 0:
+            gw = np.ones(len(groups))
+        gw = gw / gw.sum()
+        anchor_group = groups[int(rng.choice(len(groups), p=gw))]
+        anchor_pool = [c for c in NOISE_GROUPS[anchor_group] if c in available]
+        picked = [anchor_pool[int(rng.integers(len(anchor_pool)))]]
+    else:
+        picked = [available[int(rng.integers(len(available)))]]
+
+    counts = {picked[0]: 1}
+    while len(picked) < n:
+        pool = [c for c in available
+                if counts.get(c, 0) == 0
+                or (c in REPEATABLE_CATEGORIES
+                    and counts.get(c, 0) < MAX_REPEATS_PER_CATEGORY)]
+        if not pool:
+            pool = available
+        c = pool[int(rng.integers(len(pool)))]
+        picked.append(c)
+        counts[c] = counts.get(c, 0) + 1
+    return picked
 
 
 
@@ -160,7 +250,7 @@ def read_noise_classes():
     heads and the label column of the frozen evaluation manifest without
     raising anything.
     """
-    path = os.path.join(DATASET_DIR, "noise_classes.txt")
+    path = os.path.join(NOISE_DIR, "noise_classes.txt")
     classes = []
     with open(path, encoding="utf-8") as f:
         for line in f:
@@ -174,14 +264,14 @@ def read_noise_classes():
 
 def read_noise_manifest(split):
     """Returns {category: [paths]} for one split."""
-    path = os.path.join(DATASET_DIR, "noise_manifest.csv")
+    path = os.path.join(NOISE_DIR, "noise_manifest.csv")
     by_category = {}
     with open(path, newline="", encoding="utf-8-sig") as f:
         for row in csv.DictReader(f):
             if row["split"] != split:
                 continue
             by_category.setdefault(row["category"], []).append(
-                os.path.join(DATASET_DIR, row["filename"]))
+                os.path.join(NOISE_DIR, row["filename"]))
     return {k: sorted(v) for k, v in sorted(by_category.items())}
 
 
@@ -226,10 +316,14 @@ def mix_at_snr(speech, speech_span, noise, snr_db):
 
 
 def mix_many(speech, speech_span, noises, snr_db):
-    """Scale a list of noise clips so their combined sum hits snr_db, then add.
+    """Sum a list of noise clips at their own relative levels, then scale the
+    combined sum so the mixture as a whole sits at snr_db.
 
-    The total noise power budget is split equally among the clips. Apply the
-    clipping guard once at the end after summing.
+    This is deliberately different from scaling each ingredient to an equal
+    power share before summing: a loud gunshot and a quiet footstep summed
+    this way still sound like a loud gunshot with a quiet footstep under it,
+    rather than being forced to equal loudness. The whole point of "treated
+    as one for SNR" is that only the combined result is normalised, once.
 
     Returns (noisy, clean). Both are rescaled by the same factor if the sum
     would clip, so the pair stays consistent as an input/target pair.
@@ -237,23 +331,26 @@ def mix_many(speech, speech_span, noises, snr_db):
     if not isinstance(noises, (list, tuple)):
         noises = [noises]
     n_noises = len(noises)
-    if n_noises == 1:
-        return mix_at_snr(speech, speech_span, noises[0], snr_db)
-
     start, end = speech_span
     speech_power = float(np.mean(speech[start:end] ** 2))
+    if n_noises == 1:
+        # delegates for bit-identical output to the legacy single-noise
+        # path; scale is recomputed the same way only to report it alongside
+        noisy, clean = mix_at_snr(speech, speech_span, noises[0], snr_db)
+        noise_power = float(np.mean(noises[0] ** 2))
+        scale = (1.0 if speech_power < EPS or noise_power < EPS else
+                 float(np.sqrt(speech_power / (noise_power * 10.0 ** (snr_db / 10.0)))))
+        return noisy, clean, scale
 
-    scaled_noises = []
-    for noise in noises:
-        noise_power = float(np.mean(noise ** 2))
-        if speech_power < EPS or noise_power < EPS:
-            scale = 1.0 / np.sqrt(n_noises) if speech_power >= EPS else 1.0
-        else:
-            scale = np.sqrt(speech_power / (n_noises * noise_power * 10.0 ** (snr_db / 10.0)))
-        scaled_noises.append((noise * scale).astype(np.float32))
+    combined_raw = sum(noises).astype(np.float32)
+    noise_power = float(np.mean(combined_raw ** 2))
 
-    combined_noise = sum(scaled_noises)
-    noisy = speech + combined_noise
+    if speech_power < EPS or noise_power < EPS:
+        scale = 1.0
+    else:
+        scale = np.sqrt(speech_power / (noise_power * 10.0 ** (snr_db / 10.0)))
+
+    noisy = speech + (combined_raw * scale).astype(np.float32)
 
     peak = float(np.max(np.abs(noisy)))
     if peak > PEAK_CEILING:
@@ -261,7 +358,7 @@ def mix_many(speech, speech_span, noises, snr_db):
         noisy = noisy * shrink
         speech = speech * shrink
 
-    return noisy.astype(np.float32), speech.astype(np.float32)
+    return noisy.astype(np.float32), speech.astype(np.float32), scale
 
 
 class SpeechNoiseMixtures(Dataset):
@@ -273,10 +370,14 @@ class SpeechNoiseMixtures(Dataset):
     testing mixtures need.
     """
 
-    def __init__(self, split, seed=None, low_band_indices=None):
+    def __init__(self, split, seed=None, low_band_indices=None, multi_noise=False):
         if split not in SPLITS:
             raise ValueError(f"unknown split {split!r}")
         self.split = split
+        # multi_noise=True switches to the v2 mixing rules (NOISE_COUNT_WEIGHTS,
+        # group-anchored category picking, RMS-summed combine). False, the
+        # default, is the legacy path and is untouched by any of it.
+        self.multi_noise = multi_noise
 
         # Random draw gives the right proportion only on average; on 143
         # clips a 10% band lands anywhere from 6% to 15%. A FROZEN set is a
@@ -324,17 +425,13 @@ class SpeechNoiseMixtures(Dataset):
         Returns the arrays plus the bookkeeping the frozen-mixture manifest
         needs, so nothing has to be recomputed or guessed afterwards.
         """
-        if n_noises is None:
-            n_noises = N_NOISES
         rng = self._rng_for(idx)
         row = self.speech[idx]
 
         speech = load_wav(os.path.join(DATASET_DIR, row["filename"]))
         speech, start, end = place_in_window(speech, rng)
 
-        categories, noise_paths, noises = [], [], []
-        for _ in range(n_noises):
-            cat = self.categories[int(rng.integers(len(self.categories)))]
+        def _load_noise(cat):
             n_path = self.noise[cat][int(rng.integers(len(self.noise[cat])))]
             n_clip = load_wav(n_path)
             if len(n_clip) < CLIP_SAMPLES:
@@ -342,9 +439,29 @@ class SpeechNoiseMixtures(Dataset):
             elif len(n_clip) > CLIP_SAMPLES:
                 offset = int(rng.integers(0, len(n_clip) - CLIP_SAMPLES + 1))
                 n_clip = n_clip[offset:offset + CLIP_SAMPLES]
-            categories.append(cat)
-            noise_paths.append(n_path)
-            noises.append(n_clip)
+            return n_path, n_clip
+
+        if self.multi_noise:
+            if n_noises is None:
+                n_noises = sample_noise_count(rng)
+            categories = pick_categories(rng, self.categories, n_noises)
+            noise_paths, noises = [], []
+            for cat in categories:
+                n_path, n_clip = _load_noise(cat)
+                noise_paths.append(n_path)
+                noises.append(n_clip)
+        else:
+            # legacy path, bit-identical to every run before v2: independent
+            # uniform draws, no group anchoring, no repeat cap.
+            if n_noises is None:
+                n_noises = N_NOISES
+            categories, noise_paths, noises = [], [], []
+            for _ in range(n_noises):
+                cat = self.categories[int(rng.integers(len(self.categories)))]
+                n_path, n_clip = _load_noise(cat)
+                categories.append(cat)
+                noise_paths.append(n_path)
+                noises.append(n_clip)
 
         if self.low_band_indices is None:
             snr_db = draw_snr(rng)
@@ -352,11 +469,11 @@ class SpeechNoiseMixtures(Dataset):
             lo, hi = (SNR_LOW_RANGE if idx in self.low_band_indices
                       else SNR_HIGH_RANGE)
             snr_db = float(rng.uniform(lo, hi))
-        noisy, clean = mix_many(speech, (start, end), noises, snr_db)
+        noisy, clean, noise_gain = mix_many(speech, (start, end), noises, snr_db)
 
         weights = [1.0 / n_noises] * n_noises
         labels = [self.category_index[c] for c in categories]
-        rel_noise_files = [os.path.relpath(p, DATASET_DIR) for p in noise_paths]
+        rel_noise_files = [os.path.relpath(p, NOISE_DIR) for p in noise_paths]
 
         return {
             "noisy": noisy,
@@ -364,6 +481,12 @@ class SpeechNoiseMixtures(Dataset):
             "category": categories[0] if n_noises == 1 else categories,
             "categories": categories,
             "weights": weights,
+            # the single gain applied to the combined noise sum before
+            # adding -- same value for every ingredient, since mix_many
+            # normalises the sum once rather than each clip separately.
+            # Kept per-clip (not just once) so a provenance row can carry it
+            # alongside each noise_files entry without a second lookup.
+            "noise_gains": [noise_gain] * n_noises,
             "label": labels[0],
             "labels": labels,
             "snr_db": snr_db,
@@ -479,6 +602,58 @@ def self_test():
     print("\nreproducible for a fixed seed, all windows exact, no clipping, bit-identical check PASSED.")
 
 
+def self_test_multi_noise():
+    """Sanity-checks the v2 multi-noise path. Runs against whatever noise
+    set NOISE_DIR currently points at -- with dataset_v2 still empty this
+    exercises the mechanism against the v1 noise categories, which is enough
+    to prove the count distribution, the repeat cap and the RMS combine all
+    behave, without needing real v2 data yet.
+    """
+    print(f"\n--- multi-noise (v2) mechanism check, NOISE_DIR={NOISE_DIR} ---")
+    ds = SpeechNoiseMixtures("train", seed=1, multi_noise=True)
+    n_sample = min(400, len(ds))
+
+    count_hist = {}
+    burst_over_cap = 0
+    other_repeats = 0
+    peaks = []
+    for i in range(n_sample):
+        m = ds.describe(i)
+        n = len(m["categories"])
+        count_hist[n] = count_hist.get(n, 0) + 1
+        seen = {}
+        for c in m["categories"]:
+            seen[c] = seen.get(c, 0) + 1
+        for c, k in seen.items():
+            if c in REPEATABLE_CATEGORIES:
+                if k > MAX_REPEATS_PER_CATEGORY:
+                    burst_over_cap += 1
+            elif k > 1:
+                other_repeats += 1
+        assert len(m["noise_gains"]) == n
+        peaks.append(float(np.max(np.abs(m["noisy"]))))
+
+    total = sum(count_hist.values())
+    print("    noise-count draws: " + ", ".join(
+        f"{k}x {count_hist.get(k, 0)} ({count_hist.get(k, 0) / total:.0%})"
+        for k in sorted(NOISE_COUNT_WEIGHTS)))
+    print(f"    target weights:    " + ", ".join(
+        f"{k}x {w / sum(NOISE_COUNT_WEIGHTS.values()):.0%}"
+        for k, w in sorted(NOISE_COUNT_WEIGHTS.items())))
+    print(f"    peak max {max(peaks):.3f} (ceiling {PEAK_CEILING}), "
+          f"burst-cap violations {burst_over_cap}, "
+          f"other-category repeats {other_repeats}")
+    assert burst_over_cap == 0, "a burst category repeated more than the cap"
+    assert other_repeats == 0, "a non-repeatable category appeared twice in one mixture"
+    assert max(peaks) <= PEAK_CEILING + 1e-6, "clip ceiling violated"
+
+    # reproducibility, same as the legacy check above
+    again = SpeechNoiseMixtures("train", seed=1, multi_noise=True)
+    assert np.array_equal(ds.describe(0)["noisy"], again.describe(0)["noisy"])
+    print("    reproducible for a fixed seed, repeat cap holds, no clipping. PASSED.")
+
+
 if __name__ == "__main__":
     self_test()
+    self_test_multi_noise()
 
