@@ -2084,10 +2084,100 @@ starts with a silent lead-in on purpose.
 
 ### What would change the Pi 4 answer
 
-Two things, both unbuilt. An incremental encoder/decoder (per-layer ring
-buffers, the post-filter trick) removes the 3.4x redundant conv work and was
-estimated to land at the deadline with no headroom. Better: the GTCRN-style
-hybrid frequency resolution (full-resolution bins below ~2 kHz, ERB bands
-above) halves the LSTM input dimension, which is the actual bottleneck, at a
-measured quality cost of zero in the literature. That is a retrain, and every
-per-bin diagnostic in this project would need re-deriving first.
+~~Two things, both unbuilt.~~ **One of them is now built, measured, and
+decided -- Section 25.** The ERB hybrid (full-resolution bins below ~2 kHz,
+ERB bands above, halving the LSTM's input) clears the Pi 5 two-stage
+deadline, which was the condition for the Pi 4 route to stop mattering. The
+incremental encoder/decoder (per-layer ring buffers, the post-filter trick)
+remains unbuilt and is now moot for that reason.
+
+## 25. The ERB and TCN follow-up, measured on the Pi 5
+
+2026-09-19, same Pi 5 as Section 24, same bundle mechanism (`deploy/bundle/`)
+extended to carry two more trained runs side by side with the original --
+0035 (the TCN) and 0036 (the ERB hybrid) -- so all three load and run through
+one `bench_configs.py --run <name>` without touching what already worked.
+Verified locally on x86 first: all three build and run correctly, and the
+TCN's streaming path matches the offline path to 1.19e-07, the same precision
+the CRN's own streaming got. Nothing here changes what shipped from
+Section 24; both are answers to questions that were explicitly left open.
+
+### The ERB hybrid: adopted as a deliberate speed-for-quality trade
+
+Section 22 already settled that run 0036 is not a free change: PESQ holds
+(-0.8 sigma) but STOI (-5 sigma) and SI-SNR (-3 sigma) regress, because
+halving the frequency axis also halves the LSTM's bands from 9 to 5, and run
+0013 showed that matters. What was left was the Pi trade -- does the compute
+saved pull the two-stage system under the 100 ms deadline, which would bring
+back the post-filter's +0.05 PESQ, ten times what 0036 gave up.
+
+    Pi 5, 4 threads, int8          two-stage    stage 1
+    0026 (baseline)                  93.0 ms     57.4 ms
+    0036 (ERB)                       69.7 ms     36.4 ms   ok, all four configs
+
+Every configuration for 0036 passed, including fp32 two-stage at 85.6 ms --
+30 ms of headroom under the deadline, against 0026's much tighter margin. The
+speed half of the trade is real and clean.
+
+**The quality half is not.** The post-filter was retrained against 0036's
+output -- `postfilter_test.py --stage1 0036_crn_cat_comp03_res1_spec600_la6_s0
+--lookahead 0 --epochs 150`, converged and early-stopped at epoch 50 (no
+improvement for 6 evaluations after) -- and scored on held-out testing
+against the pairing it would replace, the currently deployed 0026 + its own
+post-filter (1.983 / 0.8660 / 14.02):
+
+    held-out testing              PESQ        STOI      SI-SNR
+    0026 + post-filter (shipped)  1.983      0.8660      14.02
+    0036 + post-filter (new)     1.9899      0.8655     13.952
+    difference                  +0.0069     -0.0005     -0.068
+    sigma                          +1.1       -1.25       -3.1
+
+Against 0036's OWN stage-1 baseline the post-filter clearly helps (+4.8 /
++3.3 / +7.7 sigma) -- the training worked as intended. But measured against
+what was shipping before, STOI and SI-SNR both regress past the noise floor
+while only PESQ improves. By the standing rule -- every one of PESQ, STOI
+and SI-SNR must hold or improve, no exceptions -- this is **not a free
+upgrade**, and the earlier expectation on this page ("the post-filter's
++0.05 PESQ... should pass on net") did not hold up under measurement.
+
+**Adopted anyway, as a deliberate trade rather than a free win**: the
+regression is small in absolute terms, the Pi 5 speed margin (69.7 ms
+against a 100 ms deadline, versus the old pairing's much tighter 93.0 ms)
+was judged worth it, and the decision was made with the real numbers in
+hand rather than the earlier guess. `erb-hybrid` is merged; `models/
+postfilter_ch48_la0_snr25.pt` now holds the weights retrained against 0036.
+The pre-retrain post-filter (trained against 0026) remains recoverable from
+git history if this trade needs revisiting.
+
+### The TCN: a quality tie that does not translate to a speed win
+
+Built in an earlier session as a from-scratch alternative to the CRN's LSTM
+-- two stacks of dilated causal convolutions, same encoder, decoder, skips,
+mask and auxiliary head inherited unchanged, so a win or loss is
+attributable to the one thing that moved. Run 0035 against the three-seed
+control: PESQ +0.9 sigma, STOI -0.1 sigma, SI-SNR +1.6 sigma -- a tie on
+every axis, not a win. The reason to still measure it: an LSTM re-reads all
+its weights every 10 ms frame (758 MB/s), while the TCN's convolutions reuse
+weights across a whole chunk (81 MB/s, 9.3x less) -- a bandwidth argument
+that should matter most on exactly the kind of board being tested.
+
+    Pi 5, 4 threads                  fp32        int8
+    0026 stage 1 (CRN)              80.1 ms     57.4 ms   (-28%)
+    0035 stage 1 (TCN)              64.7 ms     68.4 ms   (~0%)
+
+The bandwidth argument holds in fp32 -- the TCN is genuinely faster, 64.7 ms
+against 80.1 ms. It does not survive int8: dynamic quantisation only touches
+`LSTM` and `Linear` layers, and the TCN has neither in any real quantity, so
+it barely moves (64.7 -> 68.4 ms) while the same trick cuts the CRN by 28%
+(80.1 -> 57.4 ms). Where it actually matters for deployment -- int8, the
+configuration that ships -- the CRN ends up faster. Combined with the
+quality tie, there is no case to switch architectures.
+
+A smaller finding worth recording on its own: `stream.py` needed **zero code
+changes** to run the TCN. Its `Streamer` class calls `self.m.encoder`,
+`self.m.memory`, `self.m.decoder` as plain attributes with no type checks,
+and the TCN's `TemporalCore.forward(x, state=None) -> (out, seq, state)` was
+already built to match `Memory`'s exact signature -- each of its causal
+blocks keeps its own small ring buffer, the same shape of trick already used
+for the post-filter. Streaming correctness came out at 1.19e-07 against the
+offline path on the first attempt.

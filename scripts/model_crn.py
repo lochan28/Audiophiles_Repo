@@ -16,6 +16,7 @@ a check to self_test() that must pass before the next is started.
 Run this file directly to execute every check built so far.
 """
 
+import os
 import torch
 import torch.nn as nn
 
@@ -40,6 +41,19 @@ ENCODER_CHANNELS = (16, 32, 64, 128, 128)
 # is the first thing to try if train and validation loss diverge.
 
 ENCODER_FREQ_STRIDES = (2, 2, 2, 2, 2)
+
+ERB_BANDS = None
+# Hybrid frequency resolution: None, or (low_bins, n_bands). With (65, 64)
+# the lowest 65 bins (0-2 kHz) reach the encoder exactly and the remaining 192
+# bins (2-8 kHz) are merged into 64 ERB-scale bands, so the network sees 129
+# features instead of 257 and the LSTM input halves. GTCRN's choice. Speech
+# above ~2 kHz is aperiodic -- fricatives, aspiration -- so a per-band gain
+# captures it nearly as well as a per-bin one: `scripts/erb_ceiling.py`
+# measured the ideal-mask ceiling at 3.388 with (65, 64) against 3.389 at
+# full resolution, and STOI unchanged. The point is the Raspberry Pi, where
+# the LSTM is the layer that does not scale. Fewer low bins or fewer bands is
+# more aggressive; (33, 32) costs 0.07 at the ceiling. Recorded in the run
+# config as "erb_bands", so old runs (None) still load.
 # Whether each encoder layer halves the pitch axis (2) or leaves it alone (1).
 # This decides how fine a picture the LSTM gets to make its decisions on, and
 # `scripts/mask_resolution.py` says that is the single most important number in
@@ -129,7 +143,37 @@ AUX_LOSS_WEIGHT = 0.2
 SAMPLE_RATE = 16000     # every wav in the project is 16 kHz
 CLIP_SAMPLES = 48000    # 3.000 s — the frozen 268 mixtures are this length
 HOP_LENGTH = 160        # 10 ms — must divide the 1600-sample chunk evenly
-N_CLASSES = 7           # the seven noise categories on disk
+
+
+def _count_noise_classes():
+    """N_CLASSES's default: the line count of dataset/noise_classes.txt,
+    read the same way mixing.read_noise_classes() parses it (skip blank
+    lines and #-comments). Falls back to 7 -- the count for every run this
+    project has trained so far -- rather than raising, because deploy/
+    ships model_crn.py with no dataset/ at all: this import must never fail
+    on a Raspberry Pi just because the training data is not there.
+
+    This is only the DEFAULT. A real training run on a noise set other than
+    dataset/ (e.g. dataset_v2/) does not rely on this -- train.py passes the
+    actual class count into the model explicitly, read from whichever noise
+    root it was told to use. This module-level constant only has to be right
+    for the common case: no override, and every deploy script that never
+    overrides it.
+    """
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "dataset", "noise_classes.txt")
+    try:
+        with open(path, encoding="utf-8") as f:
+            classes = [line.split("#", 1)[0].strip() for line in f]
+        classes = [c for c in classes if c]
+        if classes:
+            return len(classes)
+    except OSError:
+        pass
+    return 7
+
+
+N_CLASSES = _count_noise_classes()  # the noise categories on disk -- see _count_noise_classes
 
 AUX_TARGET = "category"
 # MEASURED AND REVERTED. "local_snr" was tried in runs 0030 and 0031, at a
@@ -302,6 +346,66 @@ class EncoderBlock(nn.Module):
         return self.act(self.norm(self.conv(self.pad(x))))
 
 
+def erb_matrix(low_bins, n_bands, n_bins=FREQ_BINS, sr=SAMPLE_RATE,
+               n_fft=N_FFT):
+    """(n_bands, n_bins - low_bins) triangular filters on the ERB scale.
+
+    Rows sum to one, so a row applied to a spectrum is a weighted average
+    over that band. Centres are spaced evenly in ERB-rate from the cutoff to
+    Nyquist. Any bin that falls between triangles is given to its nearest
+    band, so nothing is silently dropped.
+    """
+    import numpy as np
+    hz2erb = lambda f: 21.4 * np.log10(1.0 + 0.00437 * f)
+    erb2hz = lambda e: (10.0 ** (e / 21.4) - 1.0) / 0.00437
+    f_lo, f_hi = low_bins * sr / n_fft, sr / 2
+    centres = erb2hz(np.linspace(hz2erb(f_lo), hz2erb(f_hi), n_bands + 2))
+    freqs = np.arange(low_bins, n_bins) * sr / n_fft
+    W = np.zeros((n_bands, len(freqs)), dtype=np.float32)
+    for b in range(n_bands):
+        lo, c, hi = centres[b], centres[b + 1], centres[b + 2]
+        up = (freqs - lo) / max(c - lo, 1e-6)
+        down = (hi - freqs) / max(hi - c, 1e-6)
+        W[b] = np.clip(np.minimum(up, down), 0.0, None)
+    for j in np.where(W.sum(axis=0) < 1e-6)[0]:
+        W[np.argmin(np.abs(centres[1:-1] - freqs[j])), j] = 1.0
+    return torch.from_numpy(W / W.sum(axis=1, keepdims=True))
+
+
+class ERB(nn.Module):
+    """Full resolution below a cutoff, ERB bands above. See ERB_BANDS.
+
+    bm: bins -> bands (analysis). A fixed matrix; nothing to learn about
+        which bins belong to which band.
+    bs: bands -> bins (synthesis). A Linear initialised to the transpose of
+        the analysis matrix, then trained, so the model can learn to
+        re-sharpen a band gain into something better than a flat step.
+    The low bins pass through both untouched.
+    """
+
+    def __init__(self, low_bins, n_bands):
+        super().__init__()
+        self.low = int(low_bins)
+        self.n_bands = int(n_bands)
+        W = erb_matrix(self.low, self.n_bands)                # (B, F_hi)
+        self.register_buffer("W", W)
+        self.n_features = self.low + self.n_bands
+        self.bs_fc = nn.Linear(self.n_bands, W.shape[1], bias=False)
+        with torch.no_grad():
+            Ws = W / (W.sum(dim=0, keepdim=True) + 1e-8)      # columns sum 1
+            self.bs_fc.weight.copy_(Ws.T)
+
+    def bm(self, x):
+        """(..., F) -> (..., low + n_bands)"""
+        return torch.cat([x[..., :self.low], x[..., self.low:] @ self.W.T],
+                         dim=-1)
+
+    def bs(self, x):
+        """(..., low + n_bands) -> (..., F)"""
+        return torch.cat([x[..., :self.low], self.bs_fc(x[..., self.low:])],
+                         dim=-1)
+
+
 class Encoder(nn.Module):
     """Five layers squeezing 257 pitch bands down to 9.
 
@@ -315,9 +419,11 @@ class Encoder(nn.Module):
     """
 
     def __init__(self, channels=ENCODER_CHANNELS, lookahead=LOOKAHEAD_FRAMES,
-                 right_pads=None, freq_strides=ENCODER_FREQ_STRIDES):
+                 right_pads=None, freq_strides=ENCODER_FREQ_STRIDES,
+                 n_bins=FREQ_BINS):
         super().__init__()
         self.channels = tuple(channels)
+        self.n_bins = int(n_bins)
         self.freq_strides = tuple(freq_strides)
         if len(self.freq_strides) != len(self.channels):
             raise ValueError("freq_strides must have one entry per layer: "
@@ -328,7 +434,7 @@ class Encoder(nn.Module):
         self.right_pads = list(right_pads)
         self.lookahead = sum(self.right_pads)
 
-        blocks, in_ch, freq = [], 1, FREQ_BINS
+        blocks, in_ch, freq = [], 1, self.n_bins
         self.freq_path = [freq]
         for out_ch, rp, st in zip(self.channels, self.right_pads,
                                   self.freq_strides):
@@ -470,9 +576,12 @@ class CRN(nn.Module):
     def __init__(self, channels=ENCODER_CHANNELS, lookahead=LOOKAHEAD_FRAMES,
                  hidden=LSTM_HIDDEN, layers=LSTM_LAYERS, mask_max=MASK_MAX,
                  n_classes=N_CLASSES, freq_strides=ENCODER_FREQ_STRIDES,
-                 aux_target=AUX_TARGET):
+                 aux_target=AUX_TARGET, erb=ERB_BANDS):
         super().__init__()
-        self.encoder = Encoder(channels, lookahead, freq_strides=freq_strides)
+        self.erb = ERB(*erb) if erb else None
+        n_bins = self.erb.n_features if self.erb else FREQ_BINS
+        self.encoder = Encoder(channels, lookahead, freq_strides=freq_strides,
+                               n_bins=n_bins)
         self.memory = Memory(self.encoder.out_features, hidden, layers)
         self.decoder = Decoder(channels, mask_max, freq_strides=freq_strides)
         self.lookahead = self.encoder.lookahead
@@ -500,6 +609,8 @@ class CRN(nn.Module):
 
     def predict_mask(self, mag, state=None):
         """Magnitude spectrogram (B, T, F) -> mask (B, T, F), logits, state."""
+        if self.erb is not None:
+            mag = self.erb.bm(mag)
         x, skips = self.encoder(mag)
         x, seq, state = self.memory(x, state)
         # "category" pools time away and guesses once for the whole clip --
@@ -512,7 +623,12 @@ class CRN(nn.Module):
             logits = self.aux(seq).squeeze(-1)              # (B, T)
         else:
             logits = self.aux(seq.mean(dim=1))              # (B, n_classes)
-        return self.decoder(x, skips), logits, state
+        mask = self.decoder(x, skips)
+        if self.erb is not None:
+            # The learned synthesis can overshoot the decoder's range by a
+            # little; keep the mask where a mask belongs.
+            mask = self.erb.bs(mask).clamp(0.0, self.decoder.mask_max)
+        return mask, logits, state
 
     def forward(self, wav, state=None):
         """Noisy waveform (B, N) -> enhanced waveform, mask, logits, state."""
@@ -1047,6 +1163,40 @@ def self_test():
         print(f"  real audio    testing_039.wav on GPU -> {tuple(gy.shape)}, "
               f"mask mean {float(gm.mean()):.3f}, "
               f"logits finite: {bool(torch.isfinite(gl).all())}")
+
+    # ---- hybrid frequency resolution --------------------------------------
+    print("\n--- ERB hybrid resolution (65 low bins + 64 bands) ---")
+    erb = ERB(65, 64)
+    x = torch.rand(2, 50, FREQ_BINS)
+    b = erb.bm(x)
+    assert b.shape == (2, 50, 129), b.shape
+    back = erb.bs(b)
+    assert back.shape == x.shape
+    assert torch.equal(back[..., :65], x[..., :65]), "low bins must pass through"
+    assert torch.allclose(erb.W.sum(dim=1), torch.ones(64)), "rows must sum to 1"
+    assert (erb.W.sum(dim=0) > 0).all(), "every high bin must belong to a band"
+    # A flat mask must survive bins -> bands -> bins exactly: the identity
+    # for gains is the one thing a fresh synthesis must get right.
+    flat = torch.full((1, 3, FREQ_BINS), 0.7)
+    assert torch.allclose(erb.bs(erb.bm(flat)), flat, atol=1e-5), \
+        "a flat gain must round-trip"
+    m_erb = CRN(erb=(65, 64)).eval()
+    m_full = CRN().eval()
+    wav = torch.randn(1, CLIP_SAMPLES)
+    with torch.no_grad():
+        _, mk, _, _ = m_erb(wav)
+    assert mk.shape == (1, frames_for(CLIP_SAMPLES), FREQ_BINS), mk.shape
+    assert float(mk.min()) >= 0.0 and float(mk.max()) <= m_erb.decoder.mask_max
+    n_e = sum(p.numel() for p in m_erb.parameters())
+    n_f = sum(p.numel() for p in m_full.parameters())
+    print(f"  features to the encoder  257 -> {erb.n_features}")
+    print(f"  bands at the LSTM        {m_full.encoder.out_freq} -> "
+          f"{m_erb.encoder.out_freq}")
+    print(f"  LSTM input width         {m_full.memory.n_features} -> "
+          f"{m_erb.memory.n_features}")
+    print(f"  parameters               {n_f:,} -> {n_e:,}")
+    assert m_erb.memory.n_features < m_full.memory.n_features
+    assert m_erb.lookahead == m_full.lookahead, "ERB must not change lookahead"
 
     print("\nstep 6 passed. The model is complete.")
 

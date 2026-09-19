@@ -51,8 +51,8 @@ import stream as st
 #  TUNING KNOBS -- safe to change, this is what you experiment with
 # ═══════════════════════════════════════════════════════════════════
 
-RUN_DIR = os.path.join(BUNDLE, "runs", "0026_crn_comp03_spec600_la6_s0")
-# The trained stage-1 run to load.
+DEFAULT_RUN_NAME = "0026_crn_comp03_spec600_la6_s0"
+# The trained stage-1 run to load. Override with --run.
 
 POSTFILTER_WEIGHTS = os.path.join(BUNDLE, "models",
                                   "postfilter_ch48_la0_snr25.pt")
@@ -79,11 +79,11 @@ SR = 16000
 CHUNK = st.CHUNK_SAMPLES              # 1600 samples, 100 ms
 
 
-def load_models(device):
+def load_models(device, run_dir=None):
     import runlog
     import train
     import postfilter as pf
-    run = runlog.RunLog(RUN_DIR)
+    run = runlog.RunLog(run_dir or os.path.join(BUNDLE, "runs", DEFAULT_RUN_NAME))
     model, ck, epoch = train.load_run_model(run, device, "auto")
     model.eval()
     model.strip_aux()
@@ -335,6 +335,9 @@ def main():
                     help="stage 1 alone: ~1.4x faster, ~0.05 PESQ less")
     ap.add_argument("--int8", action="store_true",
                     help="dynamic int8 on the LSTM; 1.45-1.7x on ARM, free")
+    ap.add_argument("--run", default=DEFAULT_RUN_NAME, metavar="RUN_NAME",
+                    help="run folder under bundle/runs/ to load "
+                        f"(default: {DEFAULT_RUN_NAME})")
     args = ap.parse_args()
 
     if args.list:
@@ -343,7 +346,8 @@ def main():
 
     torch.set_num_threads(args.threads)
     device = torch.device("cpu")
-    model, post, ck, epoch = load_models(device)
+    run_dir = os.path.join(BUNDLE, "runs", args.run)
+    model, post, ck, epoch = load_models(device, run_dir)
     if args.no_postfilter:
         post = None
     if args.int8:

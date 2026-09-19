@@ -28,6 +28,7 @@ after so a throttled run is recognisable as one.
 import os
 import sys
 import time
+import argparse
 import subprocess
 import warnings
 
@@ -43,7 +44,7 @@ import torch
 # ═══════════════════════════════════════════════════════════════════
 #  TUNING KNOBS
 # ═══════════════════════════════════════════════════════════════════
-RUN_DIR = os.path.join(BUNDLE, "runs", "0026_crn_comp03_spec600_la6_s0")
+DEFAULT_RUN_NAME = "0026_crn_comp03_spec600_la6_s0"
 POSTFILTER_WEIGHTS = os.path.join(BUNDLE, "models",
                                   "postfilter_ch48_la0_snr25.pt")
 CLIP = os.path.join(BUNDLE, "generated_test_mixtures", "testing", "noisy",
@@ -64,6 +65,13 @@ def temp():
 
 
 def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--run", default=DEFAULT_RUN_NAME, metavar="RUN_NAME",
+                    help="run folder under bundle/runs/ to benchmark "
+                        f"(default: {DEFAULT_RUN_NAME})")
+    args = ap.parse_args()
+    run_dir = os.path.join(BUNDLE, "runs", args.run)
+
     import soundfile as sf
     import runlog
     import train
@@ -76,7 +84,8 @@ def main():
         torch.backends.quantized.engine
     dev = torch.device("cpu")
 
-    m = train.load_run_model(runlog.RunLog(RUN_DIR), dev, "auto")[0].eval()
+    print(f"run: {args.run}")
+    m = train.load_run_model(runlog.RunLog(run_dir), dev, "auto")[0].eval()
     m.strip_aux()
     post = pf.load(POSTFILTER_WEIGHTS, dev)[0].eval()
     q = torch.quantization.quantize_dynamic(

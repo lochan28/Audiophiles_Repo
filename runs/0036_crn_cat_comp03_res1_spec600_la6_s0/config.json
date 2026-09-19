@@ -1,0 +1,261 @@
+{
+  "arch": "crn",
+  "aux_loss_weight": 0.2,
+  "aux_target": "category",
+  "batch_size": 16,
+  "changed_from": "0035_tcn_cat_comp03_res1_spec600_la6_s0",
+  "changes": {
+    "arch": {
+      "from": null,
+      "to": "crn"
+    },
+    "aux_loss_weight": {
+      "from": null,
+      "to": 0.2
+    },
+    "aux_target": {
+      "from": null,
+      "to": "category"
+    },
+    "batch_size": {
+      "from": null,
+      "to": 16
+    },
+    "channel_scale": {
+      "from": null,
+      "to": 1.5
+    },
+    "chunk_ms": {
+      "from": null,
+      "to": 100.0
+    },
+    "classes": {
+      "from": null,
+      "to": [
+        "ambient",
+        "assault_rifle",
+        "engine",
+        "heavy_artillery",
+        "helicopter",
+        "mortar",
+        "rocket"
+      ]
+    },
+    "data_fraction": {
+      "from": null,
+      "to": 1.0
+    },
+    "device": {
+      "from": null,
+      "to": "cuda"
+    },
+    "early_stop_patience": {
+      "from": null,
+      "to": 0
+    },
+    "encoder_channels": {
+      "from": null,
+      "to": [
+        24,
+        48,
+        96,
+        192,
+        192
+      ]
+    },
+    "encoder_freq_strides": {
+      "from": null,
+      "to": [
+        2,
+        2,
+        2,
+        2,
+        2
+      ]
+    },
+    "epochs": {
+      "from": null,
+      "to": 150
+    },
+    "erb_bands": {
+      "from": null,
+      "to": [
+        65,
+        64
+      ]
+    },
+    "eval_every": {
+      "from": null,
+      "to": 5
+    },
+    "grad_clip": {
+      "from": null,
+      "to": 5.0
+    },
+    "hop_length": {
+      "from": null,
+      "to": 160
+    },
+    "learning_rate": {
+      "from": null,
+      "to": 0.0003
+    },
+    "lookahead_frames": {
+      "from": null,
+      "to": 6
+    },
+    "lookahead_ms": {
+      "from": null,
+      "to": 76.0
+    },
+    "lstm_bands": {
+      "from": null,
+      "to": 5
+    },
+    "lstm_hidden": {
+      "from": null,
+      "to": 512
+    },
+    "lstm_layers": {
+      "from": null,
+      "to": 2
+    },
+    "mask_loss_weight": {
+      "from": null,
+      "to": 0.0
+    },
+    "mask_max": {
+      "from": null,
+      "to": 1.0
+    },
+    "n_fft": {
+      "from": null,
+      "to": 512
+    },
+    "n_resolutions": {
+      "from": null,
+      "to": 1
+    },
+    "optimizer": {
+      "from": null,
+      "to": "adamw"
+    },
+    "parameters": {
+      "from": null,
+      "to": 7309952
+    },
+    "seed": {
+      "from": null,
+      "to": 0
+    },
+    "snr_profile": {
+      "from": null,
+      "to": "90% U(0,15) / 10% U(-5,0)"
+    },
+    "spectral_compression": {
+      "from": null,
+      "to": 0.3
+    },
+    "spectral_loss_weight": {
+      "from": null,
+      "to": 600.0
+    },
+    "spectral_resolutions": {
+      "from": null,
+      "to": [
+        512
+      ]
+    },
+    "steps_per_epoch": {
+      "from": null,
+      "to": 80
+    },
+    "train_clips": {
+      "from": null,
+      "to": 1292
+    },
+    "val_clips": {
+      "from": null,
+      "to": 143
+    },
+    "weight_decay": {
+      "from": null,
+      "to": 0.01
+    }
+  },
+  "channel_scale": 1.5,
+  "chunk_ms": 100.0,
+  "classes": [
+    "ambient",
+    "assault_rifle",
+    "engine",
+    "heavy_artillery",
+    "helicopter",
+    "mortar",
+    "rocket"
+  ],
+  "data_fraction": 1.0,
+  "device": "cuda",
+  "early_stop_patience": 0,
+  "encoder_channels": [
+    24,
+    48,
+    96,
+    192,
+    192
+  ],
+  "encoder_freq_strides": [
+    2,
+    2,
+    2,
+    2,
+    2
+  ],
+  "epochs": 150,
+  "epochs_completed": 150,
+  "erb_bands": [
+    65,
+    64
+  ],
+  "eval_every": 5,
+  "git_commit": "32ffedf-dirty",
+  "grad_clip": 5.0,
+  "hop_length": 160,
+  "inference_ms_per_clip": 52.772989999994024,
+  "init_from": null,
+  "learning_rate": 0.0003,
+  "lookahead_frames": 6,
+  "lookahead_ms": 76.0,
+  "lstm_bands": 5,
+  "lstm_hidden": 512,
+  "lstm_layers": 2,
+  "mask_loss_weight": 0.0,
+  "mask_max": 1.0,
+  "n_fft": 512,
+  "n_resolutions": 1,
+  "optimizer": "adamw",
+  "parameters": 7309952,
+  "run_name": "0036_crn_cat_comp03_res1_spec600_la6_s0",
+  "seed": 0,
+  "sequence": 36,
+  "snr_profile": "90% U(0,15) / 10% U(-5,0)",
+  "source_changed": {
+    "evaluate.py": "added",
+    "mixing.py": "added",
+    "model_crn.py": "added",
+    "runlog.py": "added",
+    "train.py": "added"
+  },
+  "spectral_compression": 0.3,
+  "spectral_loss_weight": 600.0,
+  "spectral_resolutions": [
+    512
+  ],
+  "started": "2026-09-12T01:23:39",
+  "steps_per_epoch": 80,
+  "stopped_early": null,
+  "total_latency_ms": 177.75909966666646,
+  "train_clips": 1292,
+  "val_clips": 143,
+  "weight_decay": 0.01
+}

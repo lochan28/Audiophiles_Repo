@@ -857,26 +857,55 @@ that matters — it generalises rather than being selection luck.
    256 levels destroy the mask (Section 22). "Full int8 through ONNX should give
    3-4x" was a guess and is withdrawn. The Pi 5 is the target; a Pi 4 is
    measured too slow; a Pi Zero 2 W is out of the question.
-7. **The ERB hybrid is built, measured, and waiting for a board.** Branch
-   `erb-hybrid` (tag `pre-erb` marks where it forked): full resolution below
-   2 kHz, 64 ERB bands above, LSTM input 1728 -> 960, parameters 9.26 M ->
-   7.31 M. `scripts/erb_ceiling.py` showed the representation costs 0.001
-   PESQ at the ideal-mask ceiling; run 0036 showed the trained model pays
-   anyway -- PESQ holds (-0.8 sigma) but STOI -5 sigma and SI-SNR -3 sigma --
-   because the change also halves the LSTM's bands from 9 to 5, and run 0013
-   already showed that matters. **Rejected as a free change.** Undecided as a
-   trade: it buys 1.3-1.4x on x86 stage 1, more on ARM where the LSTM
-   dominates. The ten-minute test that settles it, on a Pi 5:
-   `bench_configs.py` pointed at run 0036. If the **two-stage** system drops
-   under 100 ms (it sits at 110.8 ms int8 with run 0026, 10% over), retrain the
-   post-filter on 0036's output with `postfilter_test.py` and score the pair --
-   the post-filter's +0.05 PESQ is ten times what 0036 gave up, so the pair
-   could pass the acceptance rule on net. If it does not, delete the branch.
-   Do not estimate the ARM number from the x86 one; that was off by 3x once.
-8. **Make the Pi 4 real-time, if it still matters.** The remaining unbuilt
-   route is an incremental encoder/decoder with per-layer ring buffers,
-   estimated to land at the deadline with no headroom. Item 7's answer comes
-   first; if the ERB model makes the Pi 5 two-stage, the Pi 4 stops mattering.
+7. ~~**The ERB hybrid is built, measured, and waiting for a board.**~~
+   **Adopted, 2026-09-19 -- a deliberate speed-for-quality trade, eyes open.**
+   Branch `erb-hybrid` (tag `pre-erb` marks where it forked), merged.
+   Rejected as a *free* change (run 0036: PESQ holds at -0.8 sigma, STOI
+   -5 sigma, SI-SNR -3 sigma, because halving the frequency axis also halves
+   the LSTM's bands from 9 to 5, and run 0013 already showed that matters).
+   The Pi trade half of the question came back positive: `bench_configs.py
+   --run 0036_crn_cat_comp03_res1_spec600_la6_s0`, int8 two-stage **69.7 ms**,
+   comfortably under the 100 ms deadline (run 0026 sits at 93.0 ms the same
+   day, on the same board) -- every configuration passed, including fp32
+   two-stage at 85.6 ms.
+
+   The post-filter was retrained against 0036's output
+   (`postfilter_test.py --stage1 0036... --lookahead 0 --epochs 150`,
+   converged at epoch 50) and scored on held-out testing against the
+   pairing it replaces, 0026 + the original post-filter (1.983 / 0.8660 /
+   14.02):
+
+       PESQ +0.0069 (+1.1 sigma)   STOI -0.0005 (-1.25 sigma)   SI-SNR -0.068 (-3.1 sigma)
+
+   STOI and SI-SNR both regress past the noise floor -- by the standing rule
+   (every metric must hold or improve) this is not a free upgrade, and the
+   earlier guess on this page ("should pass on net") did not hold up under
+   measurement. **Decided anyway**: the regression is small in absolute
+   terms and the Pi 5 speed margin was judged worth it. `models/
+   postfilter_ch48_la0_snr25.pt` now holds the retrained (0036-paired)
+   weights -- the pre-retrain version (trained against 0026) stays
+   recoverable from git history if this needs revisiting.
+8. ~~**Make the Pi 4 real-time, if it still matters.**~~ **Does not matter
+   any more.** Item 7 resolved yes: the ERB model clears the Pi 5 two-stage
+   deadline, which was the condition for retiring this.
+9. **The TCN (branch `tcn`, run 0035): measured on the Pi 5, does not
+   displace the CRN.** Built in an earlier session as a from-scratch
+   alternative to the LSTM -- two stacks of dilated causal convolutions,
+   same encoder/decoder/mask, a tie on every quality metric (PESQ +0.9
+   sigma, STOI -0.1, SI-SNR +1.6 -- a tie, not a win). The reason it was
+   worth measuring: an LSTM re-reads all its weights every 10 ms frame
+   (758 MB/s) where the TCN's convolutions reuse weights across a whole
+   chunk (81 MB/s), and a Pi is exactly the kind of bandwidth-starved board
+   where that should matter. It does, partly -- fp32 stage 1 is 64.7 ms
+   against the CRN's 80.1 ms -- but int8 erases the gap and then some:
+   dynamic quantisation only touches `LSTM` and `Linear` layers, so it
+   barely moves the TCN (64.7 -> 68.4 ms, no real Linear/LSTM to quantise)
+   while it cuts the CRN by 28% (80.1 -> 57.4 ms). int8 stage 1 ends up
+   **57.4 ms for the CRN against 68.4 ms for the TCN** -- the CRN wins where
+   it actually matters for deployment. No case to switch architectures.
+   `stream.py` needed zero changes to run the TCN -- its streaming state was
+   already built to match `Memory`'s exact interface, verified to 1.19e-07
+   against the offline path before ever reaching the board.
 
 ### One experiment recorded as inconclusive, not a clean negative
 
@@ -941,11 +970,18 @@ each.
 ### Waiting on: the human-annotated noise round
 
 Three people are annotating MAD files with the Noise Annotator tool — 800
-each for Rashmit and Vaibhav, 42 for Lochan (§10, "Incoming"). When their `classified/` folders come back, the job is to
-write `scripts/merge_annotated_noise.py` to the spec in §10 — renumber into
-`noise_data/`, provenance CSV, category-in-all-splits rule, frozen sets
-untouched — and score them against `C:\mad_splits\assignment.csv`. Nothing to
-do until the folders arrive; do not pre-build the script.
+each for Rashmit and Vaibhav, 42 for Lochan (§10, "Incoming"). ~~When their
+`classified/` folders come back, the job is to write
+`scripts/merge_annotated_noise.py`~~ **The tooling is already built and
+tested against synthetic data** — `scripts/merge_annotated_noise.py` (dry
+run by default; format check, content-hash dedup, category-in-all-splits
+rule) and `scripts/score_annotators.py` (tabulates each person's category
+against the MAD answer key). Both install into `dataset_v2/`, a sibling of
+`dataset/` kept separate so every past run stays comparable against the
+original set. `dataset_v2/` also carries `mixing.py`'s new opt-in
+`multi_noise=True` mixing mode (1-4 noise clips per mixture, RMS-summed
+so "treated as one for SNR" means what it says) for when this data lands.
+Nothing to do until the folders actually arrive in `incoming_noise/`.
 
 ### The honest position on the targets
 
