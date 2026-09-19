@@ -202,7 +202,11 @@ class Streamer:
             return np.zeros(0, dtype=np.float32)
 
         # --- encoder over the whole retained window -----------------------
-        x, skips = self.m.encoder(self.spec.abs())
+        feat = self.spec.abs()
+        erb = getattr(self.m, "erb", None)
+        if erb is not None:
+            feat = erb.bm(feat)                    # per-frame, no state
+        x, skips = self.m.encoder(feat)
 
         # --- LSTM over the new frames only, state carried -----------------
         a = self.done - self.spec_base
@@ -216,6 +220,8 @@ class Streamer:
         end = a + n_new
         sk = [s[:, :, end - span:end, :] for s in skips]
         mask = self.m.decoder(m_full, sk)[:, -n_new:, :]
+        if erb is not None:
+            mask = erb.bs(mask).clamp(0.0, self.m.decoder.mask_max)
 
         # --- stage 2 ------------------------------------------------------
         sp = self.spec[:, a:a + n_new, :]
