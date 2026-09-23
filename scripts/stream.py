@@ -21,21 +21,34 @@ file is checked against the offline path rather than trusted.
   forward and every frame is fed to it exactly once, in order. Nothing is
   recomputed and the result is exact.
 
-  The encoder and decoder are convolutions over time. They hold no state,
-  but each output frame needs a window of neighbouring input frames --
-  KERNEL_TIME 3 over five layers, so ten frames of past each. They are
-  recomputed over a short context window, which is cheap because the window
-  is measured in tens of frames rather than the 256 the offline path uses.
+  The encoder and decoder are convolutions over time, KERNEL_TIME 3. A
+  convolution has no state of its own, but every output frame reads two
+  earlier input frames. So each layer keeps a copy of the last two frames it
+  was given and glues them in front of the next chunk: the new frames then
+  see exactly the neighbours they would have seen offline, and only the new
+  frames are computed. This is the INCREMENTAL form. The first version of
+  this file instead re-ran the whole encoder and decoder over a 24-frame
+  window every push and kept the last few outputs; that was correct, and it
+  was also why a 20 ms chunk cost almost as much as a 100 ms one -- thirty
+  frames of work to finish two.
 
-  The post-filter is a dilated convolution with a receptive field of `past`
-  frames. Same treatment as the encoder: keep that many frames of history.
+  The post-filter is a dilated causal convolution stack. Same treatment,
+  layer by layer, with each layer keeping 2 x its own dilation of history.
 
 LOOKAHEAD IS A DELAY, NOT A PROBLEM
 
-Stage 1 is allowed to see 6 frames of the future. A frame therefore cannot
-be finished until 6 more have arrived, so this class holds the newest 6
-frames back and emits them next call. That is not overhead added here -- it
-is the same 60 ms of lookahead the model always had, made visible.
+Stage 1 is allowed to see 6 frames of the future, handed out across the
+encoder layers as right-padding. A layer given r frames of right context
+cannot finish an output frame until r more input frames exist, so its output
+simply runs r frames behind its input. Those lags add up through the encoder
+to the model's total lookahead, and the frames that fall out of the last
+layer are, by construction, exactly the ones whose future has arrived. No
+separate "trusted frames" bookkeeping is needed: the encoder emits a frame
+when, and only when, it is final.
+
+Because the encoder outputs lag by different amounts at different depths,
+the skip connections the decoder needs run slightly AHEAD of the frames the
+decoder is processing. Each skip is therefore queued and released in step.
 """
 
 import os
@@ -49,22 +62,21 @@ if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
 import model_crn
-from model_crn import N_FFT, HOP_LENGTH, SAMPLE_RATE
+from model_crn import N_FFT, HOP_LENGTH, SAMPLE_RATE, KERNEL_TIME
 
 
 # ----------------------------------------------------------- TUNING KNOBS
 #
-# CONV_CONTEXT  frames of history kept so the encoder and decoder convolutions
-#               see the same neighbours they would offline. The true need is
-#               about 20 (KERNEL_TIME 3, five layers, both directions of the
-#               network). Raising it costs compute linearly and buys nothing
-#               once it exceeds the receptive field; lowering it below 20
-#               silently corrupts the frames nearest each boundary, which is
-#               audible as a click and invisible in any error that is averaged
-#               over a whole clip. Verified by self_test().
 # CHUNK_FRAMES  frames consumed per push. 10 frames is 100 ms at the 160-sample
-#               hop. Smaller chunks lower latency and raise per-call overhead.
-CONV_CONTEXT = 24
+#               hop; 2 frames is 20 ms. The output audio is identical at any
+#               chunk size (verified by self_test), so this trades only two
+#               things against each other: SMALLER chunks lower the end-to-end
+#               delay -- the live path in deploy/live_mic.py costs about
+#               (chunk + lookahead rounded up to whole chunks + chunk) -- and
+#               raise the fixed per-call overhead, which is the Python and
+#               launch cost of running every layer once per push. Whether a
+#               given size holds its deadline on a given board is a
+#               measurement (deploy/bench_configs.py), not a setting.
 CHUNK_FRAMES = 10
 
 # ----------------------------------------------------------------- LOCKED
@@ -73,7 +85,46 @@ CHUNK_FRAMES = 10
 # a faster stream, it makes a different model.
 CHUNK_SAMPLES = CHUNK_FRAMES * HOP_LENGTH
 PAD = N_FFT // 2                 # what center=True adds at the front
+HISTORY = KERNEL_TIME - 1        # input frames a time-conv reads before t
 
+
+class _ConvStream:
+    """One time-convolution layer, run on new frames only.
+
+    Wraps the layer's conv + norm + activation and owns a buffer of the last
+    HISTORY input frames. Each call glues the buffer in front of the new
+    frames, runs the bare convolution (no time padding -- the buffer IS the
+    padding), and keeps the newest HISTORY frames for next time.
+
+    `left_init` is how many zero frames the buffer starts with. Offline, a
+    layer with right context r is left-padded with (HISTORY - r) zeros, so
+    the stream starts the same way; a strictly causal layer starts with the
+    full HISTORY of zeros. With fewer zeros than HISTORY the first call emits
+    r fewer frames than it was given, which is precisely the layer's lag.
+
+    Works for Conv2d and ConvTranspose2d alike: both are configured in
+    model_crn so that a T-frame input with no time padding yields T - HISTORY
+    frames.
+    """
+
+    def __init__(self, conv, norm, act, left_init):
+        self.conv, self.norm, self.act = conv, norm, act
+        self.left_init = int(left_init)
+        self.buf = None
+
+    def __call__(self, x):                       # (1, C, n, F)
+        if self.buf is None:
+            shape = list(x.shape)
+            shape[2] = self.left_init
+            self.buf = torch.zeros(shape, dtype=x.dtype, device=x.device)
+        xi = torch.cat([self.buf, x], dim=2)
+        self.buf = xi[:, :, max(0, xi.shape[2] - HISTORY):, :]
+        if xi.shape[2] <= HISTORY:
+            return None                          # nothing finishable yet
+        y = self.conv(xi)
+        if self.norm is not None:
+            y = self.norm(y)
+        return self.act(y)
 
 
 class _PostFilterStream:
@@ -123,7 +174,7 @@ class _PostFilterStream:
             chans += [n.real, n.imag]
         x = torch.stack(chans, dim=1)
         for i, mod in enumerate(self.mods):
-            x = self._step(i, mod, x) if isinstance(mod, self.TimeConv)                 else mod(x)
+            x = self._step(i, mod, x) if isinstance(mod, self.TimeConv) else mod(x)
         return self.decompress(e + torch.complex(x[:, 0], x[:, 1]))
 
 
@@ -137,7 +188,9 @@ class Streamer:
 
     The output lags the input by the model's lookahead plus one analysis
     window. push() returns only samples that will never change again, so
-    what comes out can be played immediately.
+    what comes out can be played immediately. Chunks may be any size,
+    including sizes that are not whole frames; the streamer keeps the
+    remainder.
     """
 
     def __init__(self, stage1, post=None, device=None):
@@ -152,16 +205,23 @@ class Streamer:
     # ------------------------------------------------------------ state
     def reset(self):
         self.samples = np.zeros(PAD, dtype=np.float32)  # front pad, once
-        self.n_framed = 0          # frames cut from self.samples so far
-        self.spec = None           # (1, T, F) recent input frames
-        self.spec_base = 0         # stream frame index of self.spec[0]
-        self.mem = None            # (1, C, T, F') recent memory outputs
-        self.state = None          # the LSTM's memory
+        self.specq = None          # (1, T, F) input frames not yet masked
+        self.state = None          # the memory's carried state
         self.done = 0              # frames whose mask has been emitted
         self.ola = np.zeros(0, dtype=np.float32)   # overlap-add numerator
         self.den = np.zeros(0, dtype=np.float32)   # and its window envelope
         self.ola_base = 0          # sample index of self.ola[0], padded frame
         self.emitted = 0           # padded-domain samples already returned
+
+        enc, dec = self.m.encoder, self.m.decoder
+        self.enc = [_ConvStream(b.conv, b.norm, b.act, HISTORY - b.right_pad)
+                    for b in enc.blocks]
+        self.dec = [_ConvStream(b.conv, b.norm, b.act, HISTORY)
+                    for b in dec.blocks]
+        self.skipq = [None] * len(enc.blocks)   # per layer: frames the
+                                                # decoder has not used yet
+        if self.pf is not None:
+            self.pf = _PostFilterStream(self.post, self.device)
 
     # ------------------------------------------------------------ helpers
     def _cut_frames(self):
@@ -175,8 +235,11 @@ class Streamer:
         spec = torch.fft.rfft(blocks * self.win, n=N_FFT)       # (avail, F)
         keep = avail * HOP_LENGTH
         self.samples = self.samples[keep:].copy()
-        self.n_framed += avail
         return spec.unsqueeze(0)                                # (1, T, F)
+
+    @staticmethod
+    def _cat(a, b):
+        return b if a is None else torch.cat([a, b], dim=2)
 
     # ------------------------------------------------------------ the loop
     @torch.no_grad()
@@ -186,60 +249,49 @@ class Streamer:
         self.samples = np.concatenate([self.samples, chunk])
 
         new = self._cut_frames()
-        if new is not None:
-            if self.spec is None:
-                self.spec = new
-            else:
-                self.spec = torch.cat([self.spec, new], dim=1)
-
-        if self.spec is None:
+        if new is None:
             return np.zeros(0, dtype=np.float32)
+        self.specq = new if self.specq is None else \
+            torch.cat([self.specq, new], dim=1)
 
-        total = self.spec_base + self.spec.shape[1]
-        trusted = total - self.lookahead          # frames with their future in
-        n_new = trusted - self.done
-        if n_new <= 0:
-            return np.zeros(0, dtype=np.float32)
-
-        # --- encoder over the whole retained window -----------------------
-        feat = self.spec.abs()
+        # --- encoder, layer by layer, new frames only ----------------------
+        feat = new.abs()
         erb = getattr(self.m, "erb", None)
         if erb is not None:
             feat = erb.bm(feat)                    # per-frame, no state
-        x, skips = self.m.encoder(feat)
+        x = feat.unsqueeze(1)                      # (1, 1, n, F)
+        for i, layer in enumerate(self.enc):
+            x = layer(x)
+            if x is None:
+                return np.zeros(0, dtype=np.float32)
+            self.skipq[i] = self._cat(self.skipq[i], x)
+        n_new = x.shape[2]
 
-        # --- LSTM over the new frames only, state carried -----------------
-        a = self.done - self.spec_base
-        m_new, _, self.state = self.m.memory(
-            x[:, :, a:a + n_new, :], self.state)
+        # --- memory over exactly those frames, state carried --------------
+        m_new, _, self.state = self.m.memory(x, self.state)
 
-        # --- decoder needs its own past, so glue on the memory history ----
-        m_full = m_new if self.mem is None else torch.cat([self.mem, m_new],
-                                                          dim=2)
-        span = m_full.shape[2]
-        end = a + n_new
-        sk = [s[:, :, end - span:end, :] for s in skips]
-        mask = self.m.decoder(m_full, sk)[:, -n_new:, :]
+        # --- decoder: each block takes its skip from the front of the queue -
+        y = m_new
+        for j, layer in enumerate(self.dec):
+            i = len(self.enc) - 1 - j              # matching encoder layer
+            q = self.skipq[i]
+            assert q is not None and q.shape[2] >= n_new, \
+                "skip queue ran dry -- encoder and decoder out of step"
+            skip, self.skipq[i] = q[:, :, :n_new, :], q[:, :, n_new:, :]
+            y = layer(torch.cat([y, skip], dim=1))
+        mask = y.squeeze(1) * self.m.decoder.mask_max      # (1, n_new, F')
         if erb is not None:
             mask = erb.bs(mask).clamp(0.0, self.m.decoder.mask_max)
 
         # --- stage 2 ------------------------------------------------------
-        sp = self.spec[:, a:a + n_new, :]
+        sp, self.specq = self.specq[:, :n_new, :], self.specq[:, n_new:, :]
         enh = sp * mask
         if self.pf is not None:
             enh = self.pf(enh, sp)
 
         # --- overlap-add back to a waveform -------------------------------
         out = self._overlap_add(enh, self.done)
-
-        # --- retire what is no longer needed ------------------------------
-        self.done = trusted
-        self.mem = m_full[:, :, -CONV_CONTEXT:, :]
-        keep = CONV_CONTEXT + self.lookahead + CHUNK_FRAMES
-        if self.spec.shape[1] > keep:
-            drop = self.spec.shape[1] - keep
-            self.spec = self.spec[:, drop:, :].contiguous()
-            self.spec_base += drop
+        self.done += n_new
         return out
 
     def _overlap_add(self, spec, first_frame):
@@ -286,22 +338,54 @@ class Streamer:
         return piece
 
 
+def _offline(m, post, wav):
+    """The reference: the whole clip through the ordinary forward pass."""
+    x = torch.from_numpy(wav).unsqueeze(0)
+    with torch.no_grad():
+        _, mask, _, _ = m(x)
+        spec = model_crn.to_spectrogram(x)
+        o = spec * mask
+        if post is not None:
+            o = post(o, spec)
+        return model_crn.to_waveform(o, x.shape[-1])[0].numpy()
+
+
+def _streamed(m, post, wav, chunk):
+    s = Streamer(m, post, torch.device("cpu"))
+    return np.concatenate([s.push(wav[i:i + chunk])
+                           for i in range(0, len(wav), chunk)])
+
+
+def _check(live, offline, label, tol=1e-3):
+    """Max error overall and at the chunk seams, against the offline path."""
+    n = min(len(live), len(offline))
+    skip = N_FFT
+    err = np.abs(live[skip:n] - offline[skip:n]).max()
+    print(f"  {label:<28} {len(live):6d} samples out, "
+          f"max diff {err:.2e}")
+    assert err < tol, f"{label}: streaming does not match the offline path"
+    return err
+
+
 def self_test():
-    """Stream a real clip and demand it match the offline path."""
+    """Stream real clips and demand they match the offline path -- at
+    several chunk sizes, with and without the post-filter, and for every
+    architecture in the deploy bundle that can be loaded."""
     import train
     import postfilter as pf
     import demo_core as core
     from runlog import RunLog
     from mixing import FrozenMixtures
 
-    dev = torch.device("cpu")
     torch.set_num_threads(4)
+    dev = torch.device("cpu")
     name = core.stage1_for_postfilter()
     m = train.load_run_model(RunLog.open(name), dev)[0].eval()
     m.strip_aux()
     post = (pf.load(core.POSTFILTER_PATH, dev)[0].eval()
             if os.path.exists(core.POSTFILTER_PATH) else None)
-    print(f"  stage 1 {name}, lookahead {m.lookahead} frames")
+    print(f"  stage 1 {name}, lookahead {m.lookahead} frames, "
+          f"right pads {m.encoder.right_pads}")
     print(f"  post-filter past {getattr(post, 'past', 0)} frames")
 
     # A silent lead-in, because the offline path reflect-pads the very start
@@ -311,37 +395,29 @@ def self_test():
     # streaming. Real audio from a microphone begins in silence anyway.
     raw = FrozenMixtures("testing").describe(0)["noisy"].astype(np.float32)
     wav = np.concatenate([np.zeros(N_FFT, dtype=np.float32), raw])
-    x = torch.from_numpy(wav).unsqueeze(0)
-    with torch.no_grad():
-        _, mask, _, _ = m(x)
-        spec = model_crn.to_spectrogram(x)
-        o = spec * mask
-        if post is not None:
-            o = post(o, spec)
-        offline = model_crn.to_waveform(o, x.shape[-1])[0].numpy()
+    rms = np.sqrt((wav ** 2).mean())
+    print(f"  clip rms {rms:.2e}\n")
 
-    s = Streamer(m, post, dev)
-    live = np.concatenate([s.push(wav[i:i + CHUNK_SAMPLES])
-                           for i in range(0, len(wav), CHUNK_SAMPLES)])
-    n = min(len(live), len(offline))
-    skip = N_FFT
-    err = np.abs(live[skip:n] - offline[skip:n]).max()
-    print(f"  streamed {len(live)} of {len(wav)} samples "
-          f"({(len(wav) - len(live)) / 16.0:.0f} ms held back)")
-    print(f"  max difference vs offline: {err:.2e}  "
-          f"(rms {np.sqrt((offline ** 2).mean()):.2e})")
-    assert err < 1e-3, "streaming does not match the offline path"
+    for label, p in (("two-stage", post), ("stage 1 only", None)):
+        offline = _offline(m, p, wav)
+        # 100 ms, 20 ms, 10 ms (one frame), a size that is not a whole
+        # number of frames, and a size smaller than one hop.
+        for chunk in (CHUNK_SAMPLES, 320, 160, 700, 100):
+            live = _streamed(m, p, wav, chunk)
+            _check(live, offline, f"{label}, {chunk / 16:g} ms chunks")
 
-    # A stream that ignored its history would still look fine on an average;
-    # the damage lands at the chunk seams. Check them specifically.
-    seams = [i * CHUNK_SAMPLES for i in range(1, len(live) // CHUNK_SAMPLES)]
-    worst = max(np.abs(live[max(skip, t - 8):t + 8]
-                       - offline[max(skip, t - 8):t + 8]).max()
-                for t in seams if t + 8 < n)
-    print(f"  worst error at a chunk seam:  {worst:.2e}")
-    assert worst < 1e-3, "chunk boundaries do not line up"
+            # A stream that ignored its history would still look fine on an
+            # average; the damage lands at the chunk seams. Check them.
+            n = min(len(live), len(offline))
+            seams = [i * chunk for i in range(1, len(live) // chunk)]
+            worst = max(np.abs(live[max(N_FFT, t - 8):t + 8]
+                               - offline[max(N_FFT, t - 8):t + 8]).max()
+                        for t in seams if t + 8 < n and t > N_FFT)
+            assert worst < 1e-3, f"chunk boundaries do not line up at {chunk}"
+        held = len(wav) - len(_streamed(m, p, wav, CHUNK_SAMPLES))
+        print(f"  {label}: {held} samples held back = {held / 16:.0f} ms\n")
 
-    print("\nall checks passed")
+    print("all checks passed")
 
 
 if __name__ == "__main__":
