@@ -43,18 +43,28 @@ flat U(-5,+15) dB; they are now drawn **90% from U(0,15) and 10% from
 U(-5,0)**, and the frozen evaluation sets were rebuilt to match. Read §4.0
 before comparing any two numbers in this project.
 
-The system is now **two stages**: run 0026 (the CRN), frozen, followed by a
-small causal post-filter that predicts a residual to *add* to its output.
-Scored on the current held-out testing set -- 125 mixtures never used for
-training and never used to choose the model:
+The system is **two stages**: a frozen CRN (stage 1) followed by a small
+causal post-filter that predicts a residual to *add* to its output. **Since
+2026-09-19 stage 1 is run 0036 (the ERB hybrid)**, adopted over run 0026 as a
+deliberate speed-for-quality trade so the two-stage system fits the Raspberry
+Pi 5 (§13 item 7). Scored on the current held-out testing set -- 125 mixtures
+never used for training and never used to choose the model:
 
 ```
-                 raw input   stage 1   two-stage    target     status
-PESQ               1.223      1.934      1.983       2.5       short by 0.52
-STOI               0.754      0.863      0.866       0.85      MET
-SI-SNR (dB)        6.14      13.62      14.02       15.0       short by 0.98
-latency                                 177.0 ms    200-250    inside
+                 raw input   shipped (0036 + PF)   target     status
+PESQ               1.223           1.990            2.5       short by 0.51
+STOI               0.754           0.866            0.85      MET
+SI-SNR (dB)        6.14           13.95            15.0       short by 1.05
+latency (delay)                  ~300 ms           200-250    OVER, see below
 ```
+
+For reference, the previous pairing (run 0026 + its post-filter) read 1.934 /
+0.863 / 13.62 for stage 1 alone and **1.983 / 0.866 / 14.02** two-stage. The
+swap is +0.0069 PESQ, -0.0005 STOI, -0.068 SI-SNR: STOI and SI-SNR slipped
+past the noise floor, which the acceptance rule in §3 would normally forbid --
+accepted anyway, eyes open, for the Pi margin. The DeepFilterNet comparison
+and the per-experiment numbers further down were measured with the 0026
+pairing and are left as recorded.
 
 **STOI now clears its target on held-out audio.** Under the project's
 acceptance rule (§3) it becomes a constraint to protect rather than a goal to
@@ -81,19 +91,70 @@ from the exam getting easier, not from the model.** It also suggests training
 on harder mixtures generalises downward well, which is the direction you want
 if deployment ever sees worse conditions than the test set.
 
-### Latency, measured on an RTX 5060 laptop GPU
+### Latency -- two different numbers, and which one a listener feels
+
+**Read this before quoting any latency figure.** The project conflated two
+quantities for a long time, and the widely-quoted **177 ms was wrong**.
+
+**Throughput** is "can the board keep up?" -- compute time per chunk against
+the chunk period. Miss it and audio drops out. **Delay** (mouth to ear) is
+"how long after I speak does the other end hear me?" -- the sum of every place
+a sample WAITS. A system can have excellent throughput and poor delay; ours
+does.
 
 ```
- 76 ms    lookahead    (16 ms unavoidable from STFT framing + 60 ms chosen)
-100 ms    chunk wait   (we process 100 ms at a time, so we wait for it to arrive)
-0.92 ms   compute      (0.65 ms stage 1 + 0.27 ms post-filter)
--------
-177.0 ms  end to end
+THROUGHPUT   Pi 5, 4 threads, int8, run 0036 + post-filter
+             69.7 ms of compute per 100 ms chunk = 1.4x real time, deadline met
+
+DELAY        the model holds 86 ms back before a sample is final
+             (60 ms chosen lookahead + 16 ms STFT framing + 10 ms frame
+             quantisation). MEASURED off the streamer, not derived: it emits
+             1376 samples fewer than it is fed, always.
+
+             live path, deploy/live_mic.py, 100 ms audio blocks:
+              100 ms   wait for the block to fill
+              100 ms   the 86 ms hold-back, rounded UP to a whole block
+              100 ms   the output block's own slot
+              -------
+             ~300 ms   + sound-card I/O (NOT yet measured)
 ```
 
-The post-filter is **strictly causal**, so it buys no lookahead at all: it adds
-0.3 ms to the total, all of it arithmetic. Per 3-second clip the two stages
-cost 22.39 ms and 30.26 ms respectively on the GPU.
+**Compute does not add to the delay.** `live_mic.py` runs inference on a
+worker thread while the next block fills, so the 69.7 ms hides inside a 100 ms
+block period. Replace it with 1 ms and the delay is still ~300 ms: the delay
+is set by the BLOCK SIZE, not by the model's speed.
+
+**Where 177 ms came from, and why it is wrong.** `train.py`'s
+`measure_inference_ms` and `total_latency_ms` compute
+`lookahead + chunk + compute`, on the training GPU. Two errors: it ADDS
+compute that actually overlaps, and it assumes output can be released at any
+instant when in fact the hold-back is rounded up to a whole block. It also
+uses 76 ms where the streamer really holds 86. Every `runs/*/config.json`
+carries this field -- treat it as a lower bound on an ideal system, not as a
+measured delay. `live_mic.py` printing "added latency ~188 ms" is wrong the
+same way.
+
+**The lever is the block size, not the model.** Since the encoder and decoder
+became incremental (§11) the chunk size is a free knob -- the output audio is
+bit-identical at any of them. Delay is roughly
+`chunk + roundup(86, chunk) + chunk`:
+
+```
+    block    delay        x86 median/worst per push   verdict
+    100 ms   ~300 ms      25.1 / 31.1 ms              comfortable, over budget
+     50 ms   ~200 ms      19.8 / 25.2 ms              fits budget, good margin
+     20 ms   ~140 ms      15.1 / 25.7 ms              worst case misses on x86
+```
+
+**50 ms is the recommended target**, and the measurement that decides it has
+NOT been taken -- `bench_configs.py` with `CHUNK_FRAMES = 5` on the board
+(§13). The x86 numbers above are a laptop CPU; §8 records that x86-to-ARM
+scaling was already off by 3x once in this project. Nothing here is a Pi
+result.
+
+The post-filter is **strictly causal**, so it buys no lookahead at all: it
+adds 0.3 ms to the total, all of it arithmetic. Per 3-second clip the two
+stages cost 22.39 ms and 30.26 ms respectively on the GPU.
 
 **It does not need a GPU.** Measured on one CPU core, streaming 100 ms chunks
 with state carried: **15.9 ms per chunk, 6.3x faster than real time**, using
@@ -104,15 +165,17 @@ Per second of audio the model needs 3.75 GMAC/s, 9.3 MB of int8 weights, and
 669 MB/s of memory bandwidth just to re-read the LSTM weights every frame.
 That last figure is what rules out microcontroller-class parts.
 
-Inside the 200-250 ms budget. It is **past**
+The 86 ms hold-back is inside the 200-250 ms budget; the ~300 ms LIVE delay
+at 100 ms blocks is not, and 50 ms blocks are the intended fix. It is **past**
 ITU-T G.114's 150 ms comfort limit, which earlier versions of this project
 claimed; that claim no longer holds and was traded deliberately for the
 lookahead gain in §7. The GPU idles 99.4% of the time, so there is large
 headroom for a slower embedded board. Target hardware is a **Raspberry Pi 5**
--- measured, 2026-09-11, PROJECT_CONTEXT_4.md Section 24. Stage 1 with int8
-runs live in real time on a Pi 5 (58 ms per 100 ms chunk, 0 underruns); the
-two-stage system does not, and a Pi 4 runs everything correctly at a quarter
-of real time. The x86 figures (8.4x on four cores) turned out to say almost
+-- measured, 2026-09-11, PROJECT_CONTEXT_4.md Section 24. With run 0026,
+stage 1 with int8 ran live in real time on a Pi 5 (58 ms per 100 ms chunk,
+0 underruns) but the two-stage system did not (93.0 ms, too tight); with run
+0036 the **full two-stage system runs int8 in 69.7 ms**, which is why it was
+adopted. A Pi 4 runs everything correctly at a quarter of real time. The x86 figures (8.4x on four cores) turned out to say almost
 nothing about ARM.
 
 ## 3. The acceptance rule — read before proposing any change
@@ -700,6 +763,7 @@ entry plus its model file.
 | `train.py` | the training loop, the loss functions, `--loss-scales`, and the shared model loader |
 | `mixing.py` | on-the-fly mixing and the frozen evaluation set |
 | `evaluate.py` | PESQ, STOI, SI-SNR reported three ways (noisy / enhanced / gain) and per noise category |
+| `stream.py` | real-time streaming inference: chunk in, finished audio out, state carried. Run it directly to check it against the whole-clip path at five chunk sizes |
 | `runlog.py` | one directory per run: config, metrics, source snapshot, checkpoints |
 | `dashboard.py` | stdlib-only web dashboard for comparing runs, reachable from a phone on the same network |
 | `oracle_ceiling.py` | the cheating test that measures the architecture's hard ceiling |
@@ -708,6 +772,52 @@ entry plus its model file.
 | `over_suppression.py` | where the mask's error lives, and whether correcting it helps |
 | `visualize_pipeline.py` | figures showing the pipeline on real audio |
 | `build_balanced_manifests.py`, `split_speech_dataset.py`, `normalize_clip_lengths.py`, `generate_test_mixtures.py`, `add_noise_class.py`, `collect_english.py`, `rechunk_long_clips*.py` | the data pipeline, mostly run once |
+
+### Streaming: the same audio, computed incrementally
+
+`stream.py` is what runs on the Pi and what any real deployment uses. The
+offline forward pass re-reads the whole clip; a live system cannot, so the
+streamer keeps state instead. Three parts of the model have a past and each
+needs a different treatment:
+
+- **The LSTM** is genuinely stateful -- its hidden state IS the memory, so it
+  is carried and every frame is fed to it exactly once. Exact by construction.
+- **The encoder and decoder** are 3-frame convolutions over time. Each layer
+  keeps its own last 2 input frames and is handed only the new ones.
+- **The post-filter** is a dilated causal stack; each layer keeps 2x its own
+  dilation of history.
+
+**This was rewritten on 2026-09-23 and it matters for latency.** The previous
+version re-ran the whole encoder and decoder over a retained 24-frame window
+on every push and kept the newest outputs. Correct, but it made a push cost
+roughly the same regardless of how much new audio it carried -- about thirty
+frames of work to finish two -- so a 20 ms chunk cost nearly as much as a
+100 ms one, and shrinking the chunk to cut delay bought nothing. The cost now
+tracks the new frames.
+
+**The gain is real but smaller than the frame count suggests: 1.5x at 20 ms,
+not 5x.** The convolutions are now negligible (2.3 ms of a 15.7 ms push). What
+remains is irreducible without further work -- the LSTM re-reads all 6.7 M of
+its weights every 10 ms frame (3.6 ms), and the post-filter is ~40 small
+tensor operations whose launch overhead is ~0.1 ms each whatever their size
+(7.0 ms). Fusing BatchNorm into the convolutions and dropping the per-layer
+pad might recover ~2 ms; nobody has tried it.
+
+**Chunk size is now a free knob.** `CHUNK_FRAMES` changes the delay and the
+per-push cost and NOTHING else -- verified bit-identical output at 100, 20,
+10, 43.75 and 6.25 ms. It is not a model parameter and does not affect PESQ,
+STOI or SI-SNR at all.
+
+**It is checked against the offline path, not trusted.** A streamer that
+mishandled its history would still produce something that sounds like speech
+and merely clicks at the chunk seams -- damage that averages away invisibly.
+So `python scripts/stream.py` demands a max difference under 1e-3 from the
+whole-clip forward pass at every chunk size, with and without the
+post-filter, AND checks the seams specifically. It currently reads ~1e-7. The
+rewrite was additionally checked to be sample-for-sample identical to the old
+streamer on all three trained runs (0026 CRN, 0036 ERB + post-filter, 0035
+TCN), to hold its buffers bounded over five minutes of 20 ms pushes, and to
+leave `deploy/selfcheck.py` printing GO with zero metric drift.
 
 ### Every run records how to reproduce it
 
@@ -751,6 +861,10 @@ python scripts/evaluate.py 0026_crn_comp03_spec600_la6_s0 --split testing
 # stage 2: the post-filter. The module self-test ASSERTS causality.
 python scripts/postfilter.py
 python scripts/postfilter_test.py
+
+# streaming: demands the chunked path match the whole-clip path exactly, at
+# five chunk sizes, with and without the post-filter
+python scripts/stream.py
 
 # compare against a published system on our own frozen set
 python scripts/benchmark_external.py --enhanced-dir <dir> --run 0026_crn_comp03_spec600_la6_s0
@@ -832,21 +946,34 @@ that matters — it generalises rather than being selection luck.
 1. **Decide whether the 2.50 PESQ target is achievable on this data.** It was
    set before anything was known about how hard this mixture set is, and
    nothing since has demonstrated it is reachable on 3-second clips at these
-   SNRs within 177 ms. A published system is where we are. This is a
+   SNRs within an 86 ms algorithmic delay. A published system is where we are. This is a
    submission-level judgement, not a coding task, and it should be made
    explicitly rather than by continuing to grind.
 2. **More training data.** The one lever never tested, because we have none.
    Less is measurably worse; more is unknown. A week of effort, so it deserves
    a decision rather than a launch.
 3. **A larger model with a relaxed latency budget.** Capacity is a real but
-   small lever at the current size, and 177 ms is already over the ITU-T G.114
-   150 ms figure the deck quotes. If the budget can move, this becomes a
-   different problem.
-4. ~~Update the SIH deck.~~ **Done.** `SIH2026_26052_ANC_Idea.pptx` now carries
-   the two-stage numbers, the corrected G.114 framing (177 ms sits inside the
-   400 ms *acceptable* range, not the 150 ms comfort limit), the DeepFilterNet
-   comparison, and four regenerated charts. Team name, team ID and theme on
-   slide 1 are still `[ FILL IN ]`.
+   small lever at the current size, and the live delay is already over the
+   ITU-T G.114 150 ms figure the deck quotes -- §2 for the real numbers. If the
+   budget can move, this becomes a different problem. Note that a bigger model
+   costs THROUGHPUT, not delay: delay is set by the lookahead and the block
+   size, so a slower model is free until it stops meeting the deadline.
+4. **The SIH deck needs its latency slide corrected, and its stage-1 numbers
+   checked.** It was updated once and is now partly stale again.
+   `SIH2026_26052_ANC_Idea.pptx` carries the two-stage numbers, the
+   DeepFilterNet comparison and four regenerated charts, and team name, team
+   ID and theme on slide 1 are still `[ FILL IN ]`. Two things are now wrong:
+
+   - **It quotes 177 ms as end-to-end latency**, built as
+     `76 + 100 + 0.9` on the training GPU. §2 explains why that figure does not
+     survive contact with the live path. A judge who adds the numbers up will
+     find the compute term does not match the Pi's 69.7 ms. Replace it with
+     the two honest lines: an 86 ms algorithmic delay with 1.4x real-time
+     throughput on a Pi 5, and the live mouth-to-ear delay for whatever block
+     size ships.
+   - **Its metrics may predate the ERB swap.** The shipped stage 1 became run
+     0036 on 2026-09-19 (item 7); if the deck still shows 1.983 / 0.866 /
+     14.02 it is describing the previous pairing.
 5. **Wire `scripts/pesq_labels.py` into `evaluate.py` and `rescore_runs.py`.**
    It scores PESQ across worker processes, 5.7x faster than serial, and is
    already on master. Small, safe, and it speeds up every future measurement.
@@ -906,6 +1033,33 @@ that matters — it generalises rather than being selection luck.
    `stream.py` needed zero changes to run the TCN -- its streaming state was
    already built to match `Memory`'s exact interface, verified to 1.19e-07
    against the offline path before ever reaching the board.
+10. **Measure a smaller audio block on the Pi 5 -- the one thing standing
+    between us and the latency budget.** The live delay is ~300 ms at 100 ms
+    blocks and the budget is 200-250 (§2). Block size is the only lever, and
+    since the streamer became incremental it is a free one: the output audio is
+    bit-identical at any chunk size, so **this cannot cost a single point of
+    PESQ, STOI or SI-SNR.** Nothing needs retraining and nothing needs
+    re-scoring.
+
+    Run `bench_configs.py` on the board with `stream.CHUNK_FRAMES = 5`
+    (50 ms, the recommended target, ~200 ms delay) and `= 2` (20 ms, ~140 ms
+    delay), and keep the median AND the worst -- a worst-case miss is a
+    dropout a listener hears, and only the median was recorded for run 0036,
+    which is a gap in the existing Pi table.
+
+    On a laptop CPU 50 ms holds comfortably (19.8 median / 25.2 worst against
+    a 50 ms deadline) and 20 ms does not (15.1 / 25.7 against 20 ms). The Pi
+    is slower, so expect 50 ms to pass and 20 ms to need the fusion work in
+    §11 first. **Do not scale these to ARM** -- §8 records that going wrong
+    by 3x already.
+
+    If 50 ms passes, `live_mic.py` needs `CHUNK_FRAMES` changed to match and
+    its "added latency" printout corrected (it prints chunk + 88 ms, which is
+    wrong twice over, see §2). Also unmeasured: the sound card's own input and
+    output latency, which adds to the ~300 ms and to every figure above.
+    `sd.query_devices()` reports it and an open `sd.Stream` exposes
+    `.latency`; a loopback with a click, recorded with and without
+    `--bypass`, would give ground truth.
 
 ### One experiment recorded as inconclusive, not a clean negative
 
