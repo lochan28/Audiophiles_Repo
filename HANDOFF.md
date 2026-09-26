@@ -1033,30 +1033,40 @@ that matters — it generalises rather than being selection luck.
    `stream.py` needed zero changes to run the TCN -- its streaming state was
    already built to match `Memory`'s exact interface, verified to 1.19e-07
    against the offline path before ever reaching the board.
-10. **Measure a smaller audio block on the Pi 5 -- the one thing standing
-    between us and the latency budget.** The live delay is ~300 ms at 100 ms
-    blocks and the budget is 200-250 (§2). Block size is the only lever, and
-    since the streamer became incremental it is a free one: the output audio is
-    bit-identical at any chunk size, so **this cannot cost a single point of
-    PESQ, STOI or SI-SNR.** Nothing needs retraining and nothing needs
-    re-scoring.
+10. ~~**Measure a smaller audio block on the Pi 5 -- the one thing standing
+    between us and the latency budget.**~~ **Measured, 2026-09-23 -- helps
+    cold, but this board cannot hold it warm.** `stream.CHUNK_FRAMES = 5`
+    (50 ms) on run 0036, int8 two-stage, on the freshly-reflashed Pi 5: a
+    short run reproduces the prediction exactly, 40.5 ms median / 41.2 ms
+    worst against a 50 ms deadline, comfortable headroom. That result only
+    held for about the first minute.
 
-    Run `bench_configs.py` on the board with `stream.CHUNK_FRAMES = 5`
-    (50 ms, the recommended target, ~200 ms delay) and `= 2` (20 ms, ~140 ms
-    delay), and keep the median AND the worst -- a worst-case miss is a
-    dropout a listener hears, and only the median was recorded for run 0036,
-    which is a gap in the existing Pi table.
+    An 8-minute continuous-load run (chunks pushed back to back with zero
+    idle time -- harsher than real use, see caveat below) tells a different
+    story. Temperature climbs from 52.7 to 84-86 degC within about 90
+    seconds on this board, which has no heatsink, and `vcgencmd
+    get_throttled` shows it sitting inside the throttle zone (currently-
+    throttled and frequency-capped bits set) for nearly the rest of the
+    run. Median drifts from 40.6 ms cold to 52.2 ms hot (+11.6 ms), worst
+    case spikes as high as 319 ms, and across all 9,686 chunks **41.29%
+    missed the 50 ms deadline** -- a listener would hear that as regular
+    dropouts, not a rare edge case.
 
-    On a laptop CPU 50 ms holds comfortably (19.8 median / 25.2 worst against
-    a 50 ms deadline) and 20 ms does not (15.1 / 25.7 against 20 ms). The Pi
-    is slower, so expect 50 ms to pass and 20 ms to need the fusion work in
-    §11 first. **Do not scale these to ARM** -- §8 records that going wrong
-    by 3x already.
+    **Caveat that keeps this from being a clean no.** The test denies the
+    chip any idle time between chunks; real `live_mic.py` only computes
+    ~40 ms out of every 50 ms window, leaving it ~20% idle per chunk to
+    shed heat that this test never gives it. Real sustained behaviour is
+    probably better than this number, but has not been measured -- and
+    neither has the 100 ms config's own sustained-load number, so there is
+    no clean baseline yet to say how much better.
 
-    If 50 ms passes, `live_mic.py` needs `CHUNK_FRAMES` changed to match and
-    its "added latency" printout corrected (it prints chunk + 88 ms, which is
-    wrong twice over, see §2). Also unmeasured: the sound card's own input and
-    output latency, which adds to the ~300 ms and to every figure above.
+    **Decided**: 50 ms chunks stay parked as a change to retest once a
+    heatsink is fitted, not adopted now. The deployed bundle and
+    `live_mic.py` were never touched for either test -- both ran from a
+    standalone script that patches `stream.CHUNK_FRAMES` in-process, not on
+    disk -- so the shipped config is still 100 ms, unchanged, and there was
+    nothing to revert. Still unmeasured either way: the sound card's own
+    input and output latency, which adds to every figure above.
     `sd.query_devices()` reports it and an open `sd.Stream` exposes
     `.latency`; a loopback with a click, recorded with and without
     `--bypass`, would give ground truth.
