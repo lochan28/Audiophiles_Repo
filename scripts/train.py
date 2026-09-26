@@ -616,7 +616,18 @@ def pick_sample_clips(dataset, k=SAMPLE_CLIPS):
     epochs is the point, and a different clip each time would destroy it.
     """
     rows = [(i, dataset.describe(i)) for i in range(len(dataset))]
-    impulsive = {"assault_rifle", "heavy_artillery", "mortar", "rocket"}
+    # Read from mixing.py rather than repeated here. This list was duplicated
+    # in both files and they DRIFTED: this copy included "rocket" and mixing's
+    # did not, so the two files disagreed about what an impulsive sound is with
+    # nothing to catch it. mixing.py is the authority because its copy drives
+    # real behaviour (which categories may appear twice in one mixture).
+    #
+    # rocket is correctly absent. A linear probe on YAMNet embeddings, trained
+    # with every rocket clip held out, places 91% of them as continuous --
+    # mean P(impulsive) 0.118, median 0.003 -- because our rocket clips are
+    # sustained motor noise rather than launch impacts. See
+    # scripts/yamnet_head.py.
+    impulsive = mixing.REPEATABLE_CATEGORIES
     hard = [r for r in rows if r[1]["category"] in impulsive]
     easy = [r for r in rows if r[1]["category"] not in impulsive]
     hard.sort(key=lambda r: r[1]["snr_db"])
