@@ -10,6 +10,20 @@
 # fully rebuildable -- see the note in scripts/benchmark_external.py.
 .venv_dfn/
 
+# A third isolated environment: Python 3.12 + TensorFlow, holding YAMNet for
+# the semi-automatic noise pre-labelling work. Separate for two reasons --
+# .venv is Python 3.14, which TensorFlow does not support at all, and TF would
+# fight torch over numpy/protobuf in a venv that is carefully pinned to a CUDA
+# build the RTX 5060 needs. Rebuildable: see scripts/yamnet_probe.py.
+.venv_yamnet/
+
+# Derived output of scripts/yamnet_probe.py: the per-clip report and the
+# 1024-d embeddings. Regenerable in one command from the clips in dataset/,
+# so it is not history -- but the report IS a finding, so if it turns up
+# something worth keeping, copy the conclusion into a doc rather than
+# committing the artifact.
+yamnet_probe_out/
+
 # Python bytecode
 __pycache__/
 *.py[cod]
