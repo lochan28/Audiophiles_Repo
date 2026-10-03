@@ -49,25 +49,37 @@ CHECKPOINT = "auto"
 # "best" to hear what different checkpoints of the same run sound like.
 
 POSTFILTER_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                               "..", "models", "postfilter_ch96_la0_snr10.pt")
+                               "..", "models", "postfilter_ch48_la0_snr25.pt")
 # The optional SECOND STAGE. If this file is missing the bench simply does not
 # offer it, so nothing here depends on the post-filter existing.
 #
 # A small strictly-causal filter that predicts a residual to ADD to the mask's
 # output -- see scripts/postfilter.py. Measured on the held-out testing split
-# with run 0026 frozen:
+# with the SHIPPED stage 1, run 0036 (the ERB hybrid), frozen:
 #
-#                     PESQ      STOI    SI-SNR    latency
-#   stage 1 alone   1.9343    0.8626    13.623    176.6 ms
-#   + ch48          1.9775    0.8646    13.966    176.7 ms
-#   + ch96          1.9826    0.8660    14.019    177.0 ms   <- served
+#                     PESQ      STOI    SI-SNR
+#   stage 1 alone   1.9570    0.8640    13.720
+#   + ch48          1.9899    0.8655    13.952   <- served
 #
-# The narrower one is kept beside it because it is a third of the compute for
-# most of the gain, which is the trade that matters if this ever runs on the
-# Jetson rather than a 5060.
+# CHOOSING THE POST-FILTER ALSO CHOOSES THE STAGE 1. A post-filter is fitted to
+# one particular first stage and records which; stage1_for_postfilter() reads
+# that back, so with RUN_NAME = None the run follows this file automatically.
+# Switching this path therefore switches the whole served system:
 #
-# Set to None to serve stage 1 alone, which is what every number recorded
-# before the post-filter refers to.
+#   postfilter_ch48_la0_snr25.pt  -> run 0036 (ERB). The shipped pairing, what
+#                                    the Pi runs, and what the deck describes.
+#   postfilter_ch96_la0_snr10.pt  -> run 0026. The PREVIOUS pairing, kept for
+#                                    comparison: 1.9826 / 0.8660 / 14.019.
+#
+# Do not hand-mix them. Pairing ch96 with 0036 would serve a filter trained to
+# correct the particular mistakes of a network that is no longer running, and
+# every number on the page would describe a system nobody measured.
+#
+# For latency, read HANDOFF.md section 2 rather than assuming: the per-clip
+# compute here is a laptop-GPU figure and the end-to-end delay is set by the
+# audio block size, not by how fast the model is.
+#
+# Set to None to serve stage 1 alone.
 
 DB_FLOOR = -80.0
 # The quietest thing drawn on a spectrogram, in dB below that clip's loudest
