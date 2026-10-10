@@ -7,8 +7,10 @@ A soldier speaks into a radio. Around them: gunfire, artillery, helicopters,
 engines. This project removes that noise in real time and keeps the speech
 intelligible, on hardware as small as a Raspberry Pi 5, fully offline.
 
-This branch holds the **code, training records and documentation**. The
-project website lives on `main`.
+This repository holds the **code, training records and documentation**. The
+project website is a separate repository,
+[lochan28/audiophiles-sih26052](https://github.com/lochan28/audiophiles-sih26052),
+which is what the site above deploys from.
 
 ---
 
@@ -159,7 +161,7 @@ identical.
 
 The documents mention commit hashes from the original development history.
 That history was rewritten to strip the audio before publishing here, so those
-hashes don't exist on this branch.
+hashes don't exist in this repository.
 
 ## Licence
 
